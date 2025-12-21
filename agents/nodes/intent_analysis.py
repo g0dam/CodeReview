@@ -1,5 +1,10 @@
 """Intent Analysis Node for the code review workflow.
 
+重构说明：
+- 使用 LCEL (LangChain Expression Language) 语法：prompt | llm | parser
+- 这是 LangGraph 标准做法，替代直接调用 llm_provider.generate()
+- 节点接收 state 作为输入，返回 state 的更新部分（Partial Update）
+
 This node implements a Map-Reduce pattern to analyze the intent of changed files
 in parallel. Each file is analyzed independently, and results are aggregated.
 """
@@ -9,8 +14,11 @@ import logging
 import json
 import re
 from typing import Dict, Any
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.messages import HumanMessage, SystemMessage
 from core.state import ReviewState, FileAnalysis, RiskItem, RiskType
 from core.llm import LLMProvider
+from core.langchain_llm import LangChainLLMAdapter
 from agents.prompts import render_prompt_template
 
 logger = logging.getLogger(__name__)
@@ -58,28 +66,66 @@ async def intent_analysis_node(state: ReviewState) -> Dict[str, Any]:
     # Create semaphore for concurrency control
     semaphore = asyncio.Semaphore(max_concurrent)
     
+    # 获取 LangChain LLM 适配器（从 metadata 或创建新实例）
+    llm_adapter = state.get("metadata", {}).get("llm_adapter")
+    if not llm_adapter:
+        # 如果没有适配器，从 llm_provider 创建
+        llm_provider = state.get("metadata", {}).get("llm_provider")
+        if llm_provider:
+            llm_adapter = LangChainLLMAdapter(llm_provider=llm_provider)
+        else:
+            logger.error("LLM provider not found in metadata")
+            return {"file_analyses": []}
+    
     # Process all files in parallel
     async def analyze_file(file_path: str) -> FileAnalysis:
-        """Analyze a single file."""
+        """Analyze a single file using LCEL syntax.
+        
+        重构说明：
+        - 使用 LCEL 语法：prompt | llm | parser
+        - 替代直接调用 llm_provider.generate()
+        """
         async with semaphore:
             try:
                 print(f"  🔍 分析中: {file_path}")
                 # Extract relevant diff section for this file
                 file_diff = _extract_file_diff(diff_context, file_path)
                 
-                # Load and render intent analysis prompt
-                prompt = render_prompt_template(
+                # 使用 LCEL 语法创建链：prompt | llm | parser
+                # 重构说明：由于 render_prompt_template 已经渲染了模板（包含 JSON 示例），
+                # 我们不能使用 ChatPromptTemplate（它会尝试解析 JSON 中的大括号作为变量）
+                # 应该直接使用 HumanMessage 和 SystemMessage
+                
+                # 渲染提示模板（已经完成变量替换）
+                rendered_prompt = render_prompt_template(
                     "intent_analysis",
                     file_path=file_path,
                     file_diff=file_diff,
                     diff_context=diff_context[:2000]  # Limit context size
                 )
                 
-                # Get LLM response
-                response = await llm_provider.generate(prompt, temperature=0.3)
+                # 重构说明：使用 PydanticOutputParser 直接解析为 FileAnalysis 模型
+                # 这是 LangGraph 标准做法，替代手动 JSON 解析
+                parser = PydanticOutputParser(pydantic_object=FileAnalysis)
                 
-                # Parse response to extract FileAnalysis
-                file_analysis = _parse_intent_analysis_response(response, file_path)
+                # 创建消息列表（直接使用已渲染的文本，并添加格式说明）
+                messages = [
+                    SystemMessage(content="You are an expert code reviewer analyzing file changes."),
+                    HumanMessage(content=rendered_prompt + "\n\n" + parser.get_format_instructions())
+                ]
+                
+                # 使用 LCEL 语法：messages -> llm -> parser
+                try:
+                    # 调用 LLM
+                    response = await llm_adapter.ainvoke(messages, temperature=0.3)
+                    # 解析为 Pydantic 模型
+                    response_text = response.content if hasattr(response, 'content') else str(response)
+                    file_analysis: FileAnalysis = parser.parse(response_text)
+                except Exception as e:
+                    # 如果解析失败，回退到文本解析
+                    logger.warning(f"PydanticOutputParser failed for {file_path}, falling back to text parsing: {e}")
+                    response_text = response.content if hasattr(response, 'content') else str(response)
+                    file_analysis = _parse_intent_analysis_response(response_text, file_path)
                 
                 print(f"  ✅ 完成: {file_path}")
                 print(f"     意图摘要: {file_analysis.intent_summary[:80]}...")
@@ -140,6 +186,14 @@ def _extract_file_diff(diff_context: str, file_path: str) -> str:
     return diff_context[:1000] if diff_context else ""
 
 
+# 重构说明：_parse_intent_analysis_response_from_dict 函数已被移除
+# 现在使用 PydanticOutputParser 直接解析为 FileAnalysis 模型
+# 这样可以：
+# 1. 自动验证所有字段类型（包括 RiskItem 中的 line_number）
+# 2. 自动处理嵌套的 RiskItem 列表验证
+# 3. 提供更好的错误信息
+# 4. 符合 LangGraph 标准做法
+
 def _parse_intent_analysis_response(response: str, file_path: str) -> FileAnalysis:
     """Parse LLM response into FileAnalysis object.
     
@@ -171,10 +225,24 @@ def _parse_intent_analysis_response(response: str, file_path: str) -> FileAnalys
             potential_risks = []
             for risk_data in potential_risks_data:
                 try:
+                    # 修复说明：line_number 是必需字段，不能为 None 或无效
+                    # 如果缺失或无效，记录错误并跳过该项
+                    line_number = risk_data.get("line_number")
+                    if line_number is None:
+                        logger.error(f"Missing line_number in risk item: {risk_data}, file_path: {file_path}")
+                        continue
+                    
+                    # 尝试转换为整数
+                    try:
+                        line_number = int(line_number)
+                    except (ValueError, TypeError) as e:
+                        logger.error(f"Invalid line_number '{line_number}' in risk item: {risk_data}, file_path: {file_path}, error: {e}")
+                        continue
+                    
                     risk_item = RiskItem(
                         risk_type=RiskType(risk_data.get("risk_type", "maintainability")),
                         file_path=risk_data.get("file_path", file_path),
-                        line_number=risk_data.get("line_number", 0),
+                        line_number=line_number,
                         description=risk_data.get("description", ""),
                         confidence=risk_data.get("confidence", 0.5),
                         severity=risk_data.get("severity", "info"),
@@ -182,7 +250,7 @@ def _parse_intent_analysis_response(response: str, file_path: str) -> FileAnalys
                     )
                     potential_risks.append(risk_item)
                 except Exception as e:
-                    logger.warning(f"Failed to parse risk item: {e}")
+                    logger.error(f"Failed to parse risk item: {e}, risk_data: {risk_data}, file_path: {file_path}")
                     continue
             
             return FileAnalysis(

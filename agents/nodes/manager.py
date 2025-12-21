@@ -1,14 +1,20 @@
 """Manager Node for the code review workflow.
 
+重构说明：
+- 使用 PydanticOutputParser 解析结构化输出（LangGraph 标准做法）
+- 使用 LCEL 语法：prompt | llm | parser
+- 替代手动 JSON 解析，提高类型安全和错误处理
+
 This node receives file analyses and generates a work list of tasks for expert agents.
 It groups tasks by risk type to enable parallel execution.
 """
 
 import logging
-import json
 from typing import Dict, Any, List
-from core.state import ReviewState, RiskItem, RiskType
-from core.llm import LLMProvider
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.output_parsers import PydanticOutputParser
+from core.state import ReviewState, RiskItem, RiskType, WorkListResponse
+from core.langchain_llm import LangChainLLMAdapter
 from agents.prompts import render_prompt_template
 
 logger = logging.getLogger(__name__)
@@ -32,11 +38,16 @@ async def manager_node(state: ReviewState) -> Dict[str, Any]:
     print("👔 [节点2] Manager - 生成任务列表并分组")
     print("="*80)
     
-    # Get LLM provider from metadata
-    llm_provider: LLMProvider = state.get("metadata", {}).get("llm_provider")
-    if not llm_provider:
-        logger.error("LLM provider not found in metadata")
-        return {"work_list": [], "expert_tasks": {}}
+    # 获取 LangChain LLM 适配器（从 metadata）
+    llm_adapter: LangChainLLMAdapter = state.get("metadata", {}).get("llm_adapter")
+    if not llm_adapter:
+        # 如果没有适配器，从 llm_provider 创建
+        llm_provider = state.get("metadata", {}).get("llm_provider")
+        if llm_provider:
+            llm_adapter = LangChainLLMAdapter(llm_provider=llm_provider)
+        else:
+            logger.error("LLM provider not found in metadata")
+            return {"work_list": [], "expert_tasks": {}}
     
     file_analyses_dicts = state.get("file_analyses", [])
     diff_context = state.get("diff_context", "")
@@ -56,20 +67,40 @@ async def manager_node(state: ReviewState) -> Dict[str, Any]:
         # Prepare file analyses summary for prompt
         analyses_summary = _format_file_analyses(file_analyses)
         
-        # Load and render manager prompt
-        prompt = render_prompt_template(
+        # 渲染提示模板（已经完成变量替换）
+        rendered_prompt = render_prompt_template(
             "manager",
             diff_context=diff_context[:3000],  # Limit context size
             file_analyses_summary=analyses_summary,
             num_files=len(file_analyses)
         )
         
-        print("  🤖 调用 LLM 生成工作列表...")
-        # Get LLM response
-        response = await llm_provider.generate(prompt, temperature=0.4)
+        # 重构说明：使用 PydanticOutputParser 解析结构化输出
+        # 这是 LangGraph 标准做法，替代手动 JSON 解析
+        parser = PydanticOutputParser(pydantic_object=WorkListResponse)
         
-        # Parse response to extract work_list
-        work_list = _parse_manager_response(response, file_analyses)
+        # 创建消息列表（直接使用已渲染的文本，避免 ChatPromptTemplate 解析 JSON 示例）
+        messages = [
+            SystemMessage(content="You are a Manager Agent for code review. Generate a work list of tasks for expert agents."),
+            HumanMessage(content=rendered_prompt + "\n\n" + parser.get_format_instructions())
+        ]
+        
+        print("  🤖 调用 LLM 生成工作列表...")
+        # 使用 LCEL 语法：messages -> llm -> parser
+        try:
+            # 调用 LLM
+            response = await llm_adapter.ainvoke(messages, temperature=0.4)
+            # 解析为 Pydantic 模型
+            response_text = response.content if hasattr(response, 'content') else str(response)
+            parsed_response: WorkListResponse = parser.parse(response_text)
+            work_list = parsed_response.work_list
+        except Exception as e:
+            # 如果解析失败，回退到从 file_analyses 提取风险
+            logger.error(f"Failed to parse manager response with PydanticOutputParser: {e}")
+            logger.warning("Falling back to extracting risks from file_analyses")
+            work_list = []
+            for analysis in file_analyses:
+                work_list.extend(analysis.potential_risks)
         
         # Group work_list by risk_type
         expert_tasks = _group_tasks_by_risk_type(work_list)
@@ -118,64 +149,13 @@ def _format_file_analyses(file_analyses: List[Any]) -> str:
     return "\n".join(summaries)
 
 
-def _parse_manager_response(response: str, file_analyses: List[Any]) -> List[RiskItem]:
-    """Parse manager LLM response into list of RiskItems.
-    
-    Args:
-        response: LLM response string.
-        file_analyses: List of FileAnalysis objects for context.
-    
-    Returns:
-        List of RiskItem objects.
-    """
-    work_list = []
-    
-    try:
-        # Try to parse as JSON
-        response_clean = response.strip()
-        if response_clean.startswith("```json"):
-            response_clean = response_clean[7:]
-        if response_clean.startswith("```"):
-            response_clean = response_clean[3:]
-        if response_clean.endswith("```"):
-            response_clean = response_clean[:-3]
-        response_clean = response_clean.strip()
-        
-        try:
-            data = json.loads(response_clean)
-            work_list_data = data.get("work_list", [])
-            
-            # If work_list is not in response, try to extract from top level
-            if not work_list_data and isinstance(data, list):
-                work_list_data = data
-            
-            for item_data in work_list_data:
-                try:
-                    risk_item = RiskItem(
-                        risk_type=RiskType(item_data.get("risk_type", "maintainability")),
-                        file_path=item_data.get("file_path", ""),
-                        line_number=item_data.get("line_number", 0),
-                        description=item_data.get("description", ""),
-                        confidence=item_data.get("confidence", 0.5),
-                        severity=item_data.get("severity", "warning"),
-                        suggestion=item_data.get("suggestion")
-                    )
-                    work_list.append(risk_item)
-                except Exception as e:
-                    logger.warning(f"Failed to parse work list item: {e}")
-                    continue
-        except json.JSONDecodeError:
-            # If JSON parsing fails, extract potential risks from file_analyses
-            logger.warning("Failed to parse manager response as JSON, using file_analyses risks")
-            for analysis in file_analyses:
-                work_list.extend(analysis.potential_risks)
-    except Exception as e:
-        logger.error(f"Error parsing manager response: {e}")
-        # Fallback: use risks from file_analyses
-        for analysis in file_analyses:
-            work_list.extend(analysis.potential_risks)
-    
-    return work_list
+# 重构说明：_parse_manager_response 函数已被移除
+# 现在使用 PydanticOutputParser 直接解析为 WorkListResponse 模型
+# 这样可以：
+# 1. 自动验证所有字段类型
+# 2. 自动处理 line_number 等必需字段的验证
+# 3. 提供更好的错误信息
+# 4. 符合 LangGraph 标准做法
 
 
 def _group_tasks_by_risk_type(work_list: List[RiskItem]) -> Dict[str, List[RiskItem]]:

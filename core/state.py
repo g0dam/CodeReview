@@ -2,11 +2,17 @@
 
 This module defines the ReviewState TypedDict that is passed between nodes
 in the LangGraph workflow.
+
+重构说明：
+- 添加 messages 字段，使用 Annotated[list, add_messages] 来管理消息历史
+- 这是 LangGraph 标准做法，用于在节点间传递对话历史
 """
 
 from typing import TypedDict, List, Dict, Any, Optional, Annotated, Literal
 from enum import Enum
 from pydantic import BaseModel, Field
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 import operator
 
 
@@ -56,14 +62,33 @@ class FileAnalysis(BaseModel):
     complexity_score: Optional[float] = Field(default=None, ge=0.0, le=100.0, description="Complexity score")
 
 
+class WorkListResponse(BaseModel):
+    """Manager node 的输出响应模型。
+    
+    重构说明：
+    - 使用 PydanticOutputParser 解析 Manager 节点的输出
+    - 确保类型安全和自动验证
+    
+    Attributes:
+        work_list: List of risk items that need expert review.
+    """
+    work_list: List[RiskItem] = Field(..., description="List of risk items for expert review")
+
+
 class ReviewState(TypedDict, total=False):
     """State object passed through the LangGraph workflow.
+    
+    重构说明：
+    1. 添加 messages 字段：使用 Annotated[list, add_messages] 来管理消息历史
+       这是 LangGraph 标准做法，用于在节点间传递对话历史，支持消息追加而非重写
+    2. 保持向后兼容：保留原有的业务字段，同时添加标准化的消息管理
     
     This TypedDict defines all possible state keys that can be used in the
     code review workflow. Keys are optional (total=False) to allow incremental
     state updates.
     
     Attributes:
+        messages: 消息历史列表，使用 add_messages 进行追加操作（LangGraph 标准）
         diff_context: The raw Git diff string from the PR.
         changed_files: List of file paths that were changed in the PR.
         file_analyses: Map-Reduce result for intent analysis (List of FileAnalysis).
@@ -76,6 +101,10 @@ class ReviewState(TypedDict, total=False):
         lint_errors: List of linting errors from pre-agent syntax checking.
         metadata: Optional dictionary for storing additional workflow metadata.
     """
+    
+    # LangGraph 标准：消息历史管理（必须）
+    # 使用 Annotated[list, add_messages] 确保消息追加而非重写
+    messages: Annotated[List[BaseMessage], add_messages]
     
     # Inputs
     diff_context: str

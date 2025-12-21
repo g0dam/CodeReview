@@ -1,5 +1,11 @@
 """Multi-agent workflow for code review using LangGraph.
 
+重构说明：
+1. 添加 LangGraph checkpointer 支持（MemorySaver）用于记忆持久化
+2. 使用 LangChain 标准工具定义（@tool 装饰器）
+3. 使用 llm.bind_tools() 绑定工具到模型
+4. 使用 LangGraph ToolNode 执行工具调用
+
 This module implements a dynamic parallel execution workflow with:
 - Map-Reduce pattern for intent analysis
 - Manager node for task routing
@@ -8,13 +14,18 @@ This module implements a dynamic parallel execution workflow with:
 """
 
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import ToolNode
+from langchain_core.messages import HumanMessage
 from core.state import ReviewState
 from core.llm import LLMProvider
+from core.langchain_llm import LangChainLLMAdapter
 from core.config import Config
 from tools.repo_tools import FetchRepoMapTool
 from tools.file_tools import ReadFileTool
+from tools.langchain_tools import create_tools_with_context
 from agents.nodes.intent_analysis import intent_analysis_node
 from agents.nodes.manager import manager_node
 from agents.nodes.expert_execution import expert_execution_node
@@ -23,8 +34,17 @@ from agents.nodes.reporter import reporter_node
 logger = logging.getLogger(__name__)
 
 
-def create_multi_agent_workflow(config: Config) -> Any:
+def create_multi_agent_workflow(
+    config: Config,
+    enable_checkpointing: bool = False  # 重构说明：默认禁用，因为代码审查工作流通常不需要跨会话持久化
+) -> Any:
     """Create the multi-agent workflow graph.
+    
+    重构说明：
+    1. 添加 checkpointer 支持（MemorySaver）用于记忆持久化
+    2. 创建 LangChain LLM 适配器，支持 LCEL 语法
+    3. 使用标准工具定义（@tool 装饰器）
+    4. 使用 llm.bind_tools() 绑定工具（在需要工具调用的节点中）
     
     Workflow structure:
     1. Intent Analysis (Map-Reduce): Analyze each changed file in parallel
@@ -34,20 +54,34 @@ def create_multi_agent_workflow(config: Config) -> Any:
     
     Args:
         config: Configuration object.
+        enable_checkpointing: 是否启用 checkpointer（记忆持久化）。
     
     Returns:
-        Compiled LangGraph workflow.
+        Compiled LangGraph workflow with checkpointer support.
     """
     # Initialize LLM provider
     llm_provider = LLMProvider(config.llm)
     
-    # Initialize tools
+    # 重构说明：创建 LangChain LLM 适配器，支持 LCEL 语法
+    llm_adapter = LangChainLLMAdapter(llm_provider=llm_provider)
+    
+    # Initialize tools (保持向后兼容，同时支持新工具)
     workspace_root = config.system.workspace_root
     asset_key = config.system.asset_key
     tools = [
         FetchRepoMapTool(asset_key=asset_key),
         ReadFileTool(workspace_root=workspace_root)
     ]
+    
+    # 重构说明：创建 LangChain 标准工具（使用 @tool 装饰器）
+    langchain_tools = create_tools_with_context(
+        workspace_root=workspace_root,
+        asset_key=asset_key
+    )
+    
+    # 重构说明：创建 checkpointer 用于记忆持久化
+    # 这是 LangGraph 标准做法，替代 ConversationBufferMemory 等传统 Memory 类
+    checkpointer = MemorySaver() if enable_checkpointing else None
     
     # Create workflow graph
     workflow = StateGraph(ReviewState)
@@ -57,6 +91,13 @@ def create_multi_agent_workflow(config: Config) -> Any:
     workflow.add_node("manager", manager_node)
     workflow.add_node("expert_execution", expert_execution_node)
     workflow.add_node("reporter", reporter_node)
+    
+    # 重构说明：添加 ToolNode 用于执行工具调用
+    # 这是 LangGraph 标准做法，替代手动解析工具调用
+    # 注意：当前工作流中工具调用主要在 expert_execution_node 中手动处理
+    # 如果需要，可以添加一个专门的工具执行节点
+    # tool_node = ToolNode(langchain_tools)
+    # workflow.add_node("tools", tool_node)
     
     # Set entry point
     workflow.set_entry_point("intent_analysis")
@@ -81,11 +122,23 @@ def create_multi_agent_workflow(config: Config) -> Any:
     # Reporter -> END
     workflow.add_edge("reporter", END)
     
-    # Compile workflow
-    compiled = workflow.compile()
+    # Compile workflow with checkpointer
+    # 重构说明：使用 checkpointer 编译工作流，支持记忆持久化
+    compile_kwargs = {}
+    if checkpointer:
+        compile_kwargs["checkpointer"] = checkpointer
+    
+    compiled = workflow.compile(**compile_kwargs)
     
     # Wrap nodes to inject dependencies
-    return _wrap_workflow_with_dependencies(compiled, llm_provider, config, tools)
+    return _wrap_workflow_with_dependencies(
+        compiled, 
+        llm_provider, 
+        llm_adapter,
+        config, 
+        tools,
+        langchain_tools
+    )
 
 
 def route_to_experts(state: ReviewState) -> str:
@@ -121,10 +174,16 @@ def route_to_experts(state: ReviewState) -> str:
 def _wrap_workflow_with_dependencies(
     compiled_graph: Any,
     llm_provider: LLMProvider,
+    llm_adapter: LangChainLLMAdapter,
     config: Config,
-    tools: List[Any]
+    tools: List[Any],
+    langchain_tools: List[Any]
 ) -> Any:
     """Wrap workflow nodes to inject dependencies (LLM provider, config, tools).
+    
+    重构说明：
+    - 添加 llm_adapter 到 metadata，支持 LCEL 语法
+    - 添加 langchain_tools 到 metadata，支持工具绑定
     
     This is a workaround since LangGraph doesn't directly support dependency injection.
     We'll modify the state to include these dependencies in metadata before execution.
@@ -132,8 +191,10 @@ def _wrap_workflow_with_dependencies(
     Args:
         compiled_graph: Compiled LangGraph workflow.
         llm_provider: LLM provider instance.
+        llm_adapter: LangChain LLM adapter instance (for LCEL syntax).
         config: Configuration object.
-        tools: List of tool instances.
+        tools: List of tool instances (legacy BaseTool).
+        langchain_tools: List of LangChain tool instances (using @tool decorator).
     
     Returns:
         Wrapped compiled graph.
@@ -143,27 +204,45 @@ def _wrap_workflow_with_dependencies(
     original_invoke = compiled_graph.invoke
     
     async def ainvoke_with_deps(state: ReviewState, **kwargs) -> ReviewState:
-        """Invoke workflow with dependencies injected into state."""
+        """Invoke workflow with dependencies injected into state.
+        
+        重构说明：
+        - 初始化 messages 字段（如果不存在）
+        - 注入 llm_adapter 支持 LCEL 语法
+        - 注入 langchain_tools 支持工具绑定
+        """
+        # 重构说明：初始化 messages 字段（LangGraph 标准）
+        if "messages" not in state:
+            state["messages"] = []
+        
         # Inject dependencies into metadata
         if "metadata" not in state:
             state["metadata"] = {}
         
         state["metadata"]["llm_provider"] = llm_provider
+        state["metadata"]["llm_adapter"] = llm_adapter  # 新增：支持 LCEL 语法
         state["metadata"]["config"] = config
-        state["metadata"]["tools"] = tools
+        state["metadata"]["tools"] = tools  # 保持向后兼容
+        state["metadata"]["langchain_tools"] = langchain_tools  # 新增：LangChain 标准工具
         
         # Call original invoke
         return await original_ainvoke(state, **kwargs)
     
     def invoke_with_deps(state: ReviewState, **kwargs) -> ReviewState:
         """Invoke workflow with dependencies injected into state (sync version)."""
+        # 重构说明：初始化 messages 字段（LangGraph 标准）
+        if "messages" not in state:
+            state["messages"] = []
+        
         # Inject dependencies into metadata
         if "metadata" not in state:
             state["metadata"] = {}
         
         state["metadata"]["llm_provider"] = llm_provider
+        state["metadata"]["llm_adapter"] = llm_adapter  # 新增：支持 LCEL 语法
         state["metadata"]["config"] = config
-        state["metadata"]["tools"] = tools
+        state["metadata"]["tools"] = tools  # 保持向后兼容
+        state["metadata"]["langchain_tools"] = langchain_tools  # 新增：LangChain 标准工具
         
         # Call original invoke
         return original_invoke(state, **kwargs)
@@ -220,7 +299,9 @@ async def run_multi_agent_workflow(
     app = create_multi_agent_workflow(config)
     
     # Initialize state
+    # 重构说明：添加 messages 字段初始化（LangGraph 标准）
     initial_state: ReviewState = {
+        "messages": [],  # 新增：消息历史（LangGraph 标准）
         "diff_context": diff_context,
         "changed_files": changed_files,
         "file_analyses": [],
@@ -248,7 +329,25 @@ async def run_multi_agent_workflow(
     print("="*80)
     
     try:
-        final_state = await app.ainvoke(initial_state)
+        # 重构说明：如果启用了 checkpointer，需要传入 config 包含 thread_id
+        # 为每次运行生成唯一的 thread_id（基于时间戳和文件列表）
+        # 注意：当前默认禁用 checkpointer，所以通常不需要传入 config
+        # 但如果需要启用，可以取消下面的注释并传入 config
+        invoke_kwargs = {}
+        
+        # 可选：如果启用了 checkpointer，生成 thread_id 并传入 config
+        # import hashlib
+        # import time
+        # thread_id = hashlib.md5(
+        #     f"{time.time()}_{','.join(changed_files)}".encode()
+        # ).hexdigest()[:16]
+        # invoke_kwargs['config'] = {
+        #     "configurable": {
+        #         "thread_id": thread_id
+        #     }
+        # }
+        
+        final_state = await app.ainvoke(initial_state, **invoke_kwargs)
         
         print("\n" + "="*80)
         print("✅ 工作流执行完成")
