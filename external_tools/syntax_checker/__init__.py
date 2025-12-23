@@ -7,6 +7,7 @@ from external_tools.syntax_checker.config_loader import get_config
 # Import all available checkers
 from external_tools.syntax_checker.implementations.python_ruff import PythonRuffChecker
 from external_tools.syntax_checker.implementations.python_pylint import PythonPylintChecker
+from external_tools.syntax_checker.implementations.typescript_eslint import TypeScriptESLintChecker
 
 # Load configuration
 _config = get_config()
@@ -18,5 +19,9 @@ if _config.is_checker_enabled("python", "pylint"):
 
 if _config.is_checker_enabled("python", "ruff"):
     CheckerFactory.register(PythonRuffChecker, [".py", ".pyi"])
+
+# TypeScript/JavaScript checkers
+if _config.is_checker_enabled("typescript", "eslint"):
+    CheckerFactory.register(TypeScriptESLintChecker, [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"])
 
 __all__ = ["BaseSyntaxChecker", "CheckerFactory", "LintError", "get_config"]

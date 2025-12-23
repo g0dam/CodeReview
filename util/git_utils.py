@@ -86,6 +86,54 @@ def get_changed_files(repo_path: Path, base: str, head: str = "HEAD") -> List[st
         except (subprocess.CalledProcessError, FileNotFoundError):
             raise ValueError(f"Not a Git repository: {repo_path}")
     
+    # Pre-validate branches before attempting diff to provide better error messages
+    # Use _check_local_ref_exists because git diff requires local branches
+    suggestions = []
+    base_exists = _check_local_ref_exists(repo_path, base)
+    head_exists = _check_local_ref_exists(repo_path, head)
+    
+    if not base_exists or not head_exists:
+        # Check remote for missing branches and auto-fetch if found
+        if not base_exists:
+            remote_base = _check_remote_ref(repo_path, base)
+            if remote_base:
+                # Auto-fetch the branch from remote
+                print(f"  🔄 Auto-fetching branch '{base}' from remote '{remote_base}'...")
+                if _fetch_branch_from_remote(repo_path, remote_base, base):
+                    print(f"  ✅ Successfully fetched branch '{base}'")
+                    # Re-check if branch now exists locally
+                    base_exists = _check_local_ref_exists(repo_path, base)
+                else:
+                    suggestions.append(f"  - Base branch '{base}' not found locally.")
+                    suggestions.append(f"    ✅ Found in remote '{remote_base}', but auto-fetch failed.")
+                    suggestions.append(f"    Please manually run: git fetch {remote_base} {base}:{base}")
+            else:
+                suggestions.append(f"  - Base branch '{base}' not found locally.")
+                suggestions.append(f"    ❌ Not found in any remote. Please check the branch name.")
+        
+        if not head_exists:
+            remote_head = _check_remote_ref(repo_path, head)
+            if remote_head:
+                # Auto-fetch the branch from remote
+                print(f"  🔄 Auto-fetching branch '{head}' from remote '{remote_head}'...")
+                if _fetch_branch_from_remote(repo_path, remote_head, head):
+                    print(f"  ✅ Successfully fetched branch '{head}'")
+                    # Re-check if branch now exists locally
+                    head_exists = _check_local_ref_exists(repo_path, head)
+                else:
+                    suggestions.append(f"  - Head branch '{head}' not found locally.")
+                    suggestions.append(f"    ✅ Found in remote '{remote_head}', but auto-fetch failed.")
+                    suggestions.append(f"    Please manually run: git fetch {remote_head} {head}:{head}")
+            else:
+                suggestions.append(f"  - Head branch '{head}' not found locally.")
+                suggestions.append(f"    ❌ Not found in any remote. Please check the branch name.")
+        
+        # If branches still don't exist after auto-fetch, raise error with suggestions
+        if not base_exists or not head_exists:
+            if suggestions:
+                error_msg = "One or more branches not found.\n\n💡 Suggestions:\n" + "\n".join(suggestions)
+                raise ValueError(f"Git diff failed: {error_msg}")
+    
     try:
         # Execute git diff --name-only with triple-dot syntax
         result = subprocess.run(
@@ -102,6 +150,35 @@ def get_changed_files(repo_path: Path, base: str, head: str = "HEAD") -> List[st
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.strip() if e.stderr else "Unknown git error"
         if "fatal:" in error_msg.lower() or "error:" in error_msg.lower():
+            # Additional check if pre-validation didn't catch it
+            if not suggestions:
+                suggestions = []
+                
+                # Check if base branch exists
+                if not base_exists:
+                    suggestions.append(f"  - Base branch '{base}' not found locally.")
+                    remote_base = _check_remote_ref(repo_path, base)
+                    if remote_base:
+                        suggestions.append(f"    ✅ Found in remote '{remote_base}'. To use it:")
+                        suggestions.append(f"       cd {repo_path}")
+                        suggestions.append(f"       git fetch {remote_base} {base}:{base}")
+                    else:
+                        suggestions.append(f"    ❌ Not found in any remote. Please check the branch name.")
+                
+                # Check if head branch exists
+                if not head_exists:
+                    suggestions.append(f"  - Head branch '{head}' not found locally.")
+                    remote_head = _check_remote_ref(repo_path, head)
+                    if remote_head:
+                        suggestions.append(f"    ✅ Found in remote '{remote_head}'. To use it:")
+                        suggestions.append(f"       cd {repo_path}")
+                        suggestions.append(f"       git fetch {remote_head} {head}:{head}")
+                    else:
+                        suggestions.append(f"    ❌ Not found in any remote. Please check the branch name.")
+            
+            if suggestions:
+                error_msg = f"{error_msg}\n\n💡 Suggestions:\n" + "\n".join(suggestions)
+            
             raise ValueError(f"Git diff failed: {error_msg}")
         else:
             raise ValueError(f"Git diff failed: {error_msg}")
@@ -150,6 +227,54 @@ def get_git_diff(repo_path: Path, base: str, head: str = "HEAD") -> str:
         except (subprocess.CalledProcessError, FileNotFoundError):
             raise ValueError(f"Not a Git repository: {repo_path}")
     
+    # Pre-validate branches before attempting diff to provide better error messages
+    # Use _check_local_ref_exists because git diff requires local branches
+    suggestions = []
+    base_exists = _check_local_ref_exists(repo_path, base)
+    head_exists = _check_local_ref_exists(repo_path, head)
+    
+    if not base_exists or not head_exists:
+        # Check remote for missing branches and auto-fetch if found
+        if not base_exists:
+            remote_base = _check_remote_ref(repo_path, base)
+            if remote_base:
+                # Auto-fetch the branch from remote
+                print(f"  🔄 Auto-fetching branch '{base}' from remote '{remote_base}'...")
+                if _fetch_branch_from_remote(repo_path, remote_base, base):
+                    print(f"  ✅ Successfully fetched branch '{base}'")
+                    # Re-check if branch now exists locally
+                    base_exists = _check_local_ref_exists(repo_path, base)
+                else:
+                    suggestions.append(f"  - Base branch '{base}' not found locally.")
+                    suggestions.append(f"    ✅ Found in remote '{remote_base}', but auto-fetch failed.")
+                    suggestions.append(f"    Please manually run: git fetch {remote_base} {base}:{base}")
+            else:
+                suggestions.append(f"  - Base branch '{base}' not found locally.")
+                suggestions.append(f"    ❌ Not found in any remote. Please check the branch name.")
+        
+        if not head_exists:
+            remote_head = _check_remote_ref(repo_path, head)
+            if remote_head:
+                # Auto-fetch the branch from remote
+                print(f"  🔄 Auto-fetching branch '{head}' from remote '{remote_head}'...")
+                if _fetch_branch_from_remote(repo_path, remote_head, head):
+                    print(f"  ✅ Successfully fetched branch '{head}'")
+                    # Re-check if branch now exists locally
+                    head_exists = _check_local_ref_exists(repo_path, head)
+                else:
+                    suggestions.append(f"  - Head branch '{head}' not found locally.")
+                    suggestions.append(f"    ✅ Found in remote '{remote_head}', but auto-fetch failed.")
+                    suggestions.append(f"    Please manually run: git fetch {remote_head} {head}:{head}")
+            else:
+                suggestions.append(f"  - Head branch '{head}' not found locally.")
+                suggestions.append(f"    ❌ Not found in any remote. Please check the branch name.")
+        
+        # If branches still don't exist after auto-fetch, raise error with suggestions
+        if not base_exists or not head_exists:
+            if suggestions:
+                error_msg = "One or more branches not found.\n\n💡 Suggestions:\n" + "\n".join(suggestions)
+                raise ValueError(f"Git diff failed: {error_msg}")
+    
     try:
         # Execute git diff with triple-dot syntax
         # Triple-dot (base...head) shows changes in head that are not in base
@@ -166,11 +291,258 @@ def get_git_diff(repo_path: Path, base: str, head: str = "HEAD") -> str:
         error_msg = e.stderr.strip() if e.stderr else "Unknown git error"
         # Provide more helpful error messages
         if "fatal:" in error_msg.lower() or "error:" in error_msg.lower():
+            # Additional check if pre-validation didn't catch it
+            if not suggestions:
+                suggestions = []
+                
+                # Check if base branch exists
+                if not base_exists:
+                    suggestions.append(f"  - Base branch '{base}' not found locally.")
+                    remote_base = _check_remote_ref(repo_path, base)
+                    if remote_base:
+                        suggestions.append(f"    ✅ Found in remote '{remote_base}'. To use it:")
+                        suggestions.append(f"       cd {repo_path}")
+                        suggestions.append(f"       git fetch {remote_base} {base}:{base}")
+                    else:
+                        suggestions.append(f"    ❌ Not found in any remote. Please check the branch name.")
+                
+                # Check if head branch exists
+                if not head_exists:
+                    suggestions.append(f"  - Head branch '{head}' not found locally.")
+                    remote_head = _check_remote_ref(repo_path, head)
+                    if remote_head:
+                        suggestions.append(f"    ✅ Found in remote '{remote_head}'. To use it:")
+                        suggestions.append(f"       cd {repo_path}")
+                        suggestions.append(f"       git fetch {remote_head} {head}:{head}")
+                    else:
+                        suggestions.append(f"    ❌ Not found in any remote. Please check the branch name.")
+            
+            if suggestions:
+                error_msg = f"{error_msg}\n\n💡 Suggestions:\n" + "\n".join(suggestions)
+            
             raise ValueError(f"Git diff failed: {error_msg}")
         else:
             raise ValueError(f"Git diff failed: {error_msg}")
     except FileNotFoundError:
         raise ValueError("Git is not installed or not in PATH")
+
+
+def _check_local_ref_exists(repo_path: Path, ref: str) -> bool:
+    """Check if a Git reference exists locally (not in remote-tracking branches).
+    
+    This function only checks for local references:
+    - Local branches (refs/heads/)
+    - Local tags (refs/tags/)
+    - Commit hashes (if they resolve to a commit and are not remote-tracking branches)
+    - Current branch name
+    
+    It does NOT check remote-tracking branches (origin/branch_name) because
+    git diff operations require local branches, not remote-tracking branches.
+    
+    Args:
+        repo_path: Path to the Git repository.
+        ref: Git reference (branch, tag, or commit).
+    
+    Returns:
+        True if reference exists locally, False otherwise.
+    """
+    # First, check if it's a local branch (refs/heads/)
+    try:
+        branch_ref = f"refs/heads/{ref}"
+        subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", branch_ref],
+            cwd=repo_path,
+            capture_output=True,
+            check=True
+        )
+        return True
+    except subprocess.CalledProcessError:
+        pass
+    
+    # Check if it's a local tag (refs/tags/)
+    try:
+        tag_ref = f"refs/tags/{ref}"
+        subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", tag_ref],
+            cwd=repo_path,
+            capture_output=True,
+            check=True
+        )
+        return True
+    except subprocess.CalledProcessError:
+        pass
+    
+    # Check if it's the current branch name
+    try:
+        current_branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True
+        ).stdout.strip()
+        if current_branch == ref:
+            return True
+    except subprocess.CalledProcessError:
+        pass
+    
+    # Check if it resolves to a commit, but exclude remote-tracking branches
+    # We need to ensure it's not a remote-tracking branch
+    try:
+        # Check all remotes to see if this ref exists as a remote-tracking branch
+        remote_result = subprocess.run(
+            ["git", "remote"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        remotes = [r.strip() for r in remote_result.stdout.strip().split("\n") if r.strip()]
+        
+        # If it exists as a remote-tracking branch, it's not a local branch
+        for remote in remotes:
+            try:
+                remote_ref = f"refs/remotes/{remote}/{ref}"
+                subprocess.run(
+                    ["git", "rev-parse", "--verify", "--quiet", remote_ref],
+                    cwd=repo_path,
+                    capture_output=True,
+                    check=True
+                )
+                # Found as remote-tracking branch, so it's not local
+                return False
+            except subprocess.CalledProcessError:
+                continue
+        
+        # Not found as remote-tracking branch, check if it resolves as a commit
+        # This handles commit hashes and other valid refs
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", ref],
+                cwd=repo_path,
+                capture_output=True,
+                check=True
+            )
+            # If it resolves and is not a remote-tracking branch, it's valid
+            return True
+        except subprocess.CalledProcessError:
+            pass
+    except subprocess.CalledProcessError:
+        # Can't check remotes, fall back to simple check
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", ref],
+                cwd=repo_path,
+                capture_output=True,
+                check=True
+            )
+            return True
+        except subprocess.CalledProcessError:
+            pass
+    
+    return False
+
+def _fetch_branch_from_remote(repo_path: Path, remote: str, branch: str) -> bool:
+    """Fetch a branch from remote and create a local tracking branch.
+    
+    This function fetches a remote branch and creates a corresponding local branch.
+    It uses `git fetch <remote> <branch>:<branch>` which creates the local branch
+    if it doesn't exist, or updates it if it does.
+    
+    Args:
+        repo_path: Path to the Git repository.
+        remote: Remote name (e.g., "origin").
+        branch: Branch name to fetch.
+    
+    Returns:
+        True if fetch succeeded, False otherwise.
+    """
+    try:
+        # Method 1: Try git fetch remote branch:branch (creates local branch if not exists)
+        result = subprocess.run(
+            ["git", "fetch", remote, f"{branch}:{branch}"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8"
+        )
+        # Verify that the local branch was created
+        if _check_local_ref_exists(repo_path, branch):
+            return True
+    except subprocess.CalledProcessError:
+        # Method 1 failed, try alternative method
+        pass
+    
+    # Method 2: If fetch branch:branch failed, try fetching and then checking out
+    try:
+        # First, fetch the remote branch (updates remote-tracking branch)
+        subprocess.run(
+            ["git", "fetch", remote, branch],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8"
+        )
+        # Then create local branch from remote-tracking branch
+        subprocess.run(
+            ["git", "branch", branch, f"{remote}/{branch}"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8"
+        )
+        # Verify that the local branch was created
+        if _check_local_ref_exists(repo_path, branch):
+            return True
+    except subprocess.CalledProcessError:
+        pass
+    
+    return False
+
+
+def _check_remote_ref(repo_path: Path, ref: str) -> Optional[str]:
+    """Check if a Git reference exists in any remote.
+    
+    Args:
+        repo_path: Path to the Git repository.
+        ref: Git reference (branch, tag, or commit).
+    
+    Returns:
+        Remote name if found (e.g., "origin"), None otherwise.
+    """
+    try:
+        # Get list of remotes
+        result = subprocess.run(
+            ["git", "remote"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        remotes = [r.strip() for r in result.stdout.strip().split("\n") if r.strip()]
+        
+        # Check each remote for the branch
+        for remote in remotes:
+            try:
+                ls_result = subprocess.run(
+                    ["git", "ls-remote", "--heads", "--tags", remote, ref],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                # If command succeeds and has output, the ref exists in this remote
+                if ls_result.stdout.strip():
+                    return remote
+            except subprocess.CalledProcessError:
+                continue
+        
+        return None
+    except subprocess.CalledProcessError:
+        return None
 
 
 def generate_asset_key(repo_path: Path, branch: Optional[str] = None, commit: Optional[str] = None) -> str:

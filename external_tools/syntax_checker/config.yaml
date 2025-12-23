@@ -25,8 +25,20 @@ python:
     enabled: false
     args: "--output-format=json"
 
-# Future: Add configurations for other languages
-# javascript:
-#   eslint:
-#     enabled: true
-#     args: "--format json"
+# TypeScript/JavaScript checkers configuration
+typescript:
+  # ESLint checker
+  eslint:
+    enabled: true
+    # ESLint command-line arguments
+    # --format json: Output in JSON format
+    # --no-color: Disable color output
+    args: "--format json --no-color"
+    # Use default ESLint config when project has no config file
+    # If true, uses external_tools/syntax_checker/eslint.config.js as fallback
+    use_default_config: true
+    # Severity mapping (ESLint uses numeric severity: 0=off, 1=warning, 2=error)
+    severity_map:
+      2: "error"
+      1: "warning"
+      0: "info"

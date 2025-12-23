@@ -22,13 +22,15 @@ class CheckerConfig:
         enabled: Whether the checker is enabled.
         args: Command-line arguments for the checker.
         severity_map: Optional mapping of error codes to severity levels.
+        use_default_config: Optional flag for using default config (checker-specific).
     """
     
     def __init__(
         self,
         enabled: bool = True,
         args: str = "",
-        severity_map: Optional[Dict[str, str]] = None
+        severity_map: Optional[Dict[str, str]] = None,
+        use_default_config: Optional[bool] = None
     ):
         """Initialize checker configuration.
         
@@ -36,10 +38,12 @@ class CheckerConfig:
             enabled: Whether the checker is enabled.
             args: Command-line arguments for the checker.
             severity_map: Optional mapping of error codes to severity levels.
+            use_default_config: Optional flag for using default config (checker-specific).
         """
         self.enabled = enabled
         self.args = args
         self.severity_map = severity_map or {}
+        self.use_default_config = use_default_config
 
 
 class SyntaxCheckerConfig:
@@ -120,11 +124,13 @@ class SyntaxCheckerConfig:
         enabled = checker_config.get("enabled", True)
         args = checker_config.get("args", "")
         severity_map = checker_config.get("severity_map")
+        use_default_config = checker_config.get("use_default_config")
         
         return CheckerConfig(
             enabled=enabled,
             args=args,
-            severity_map=severity_map
+            severity_map=severity_map,
+            use_default_config=use_default_config
         )
     
     def is_checker_enabled(
@@ -183,6 +189,7 @@ def get_checker_config_key(checker_class_name: str) -> Tuple[str, str]:
     checker_map = {
         "PythonPylintChecker": ("python", "pylint"),
         "PythonRuffChecker": ("python", "ruff"),
+        "TypeScriptESLintChecker": ("typescript", "eslint"),
     }
     
     return checker_map.get(checker_class_name, ("", ""))
@@ -212,12 +219,20 @@ def create_checker_instance(checker_class, config: Optional[SyntaxCheckerConfig]
         # Try to get configuration
         checker_config = config.get_checker_config(language, checker_name)
         
-        if checker_config and checker_config.args:
-            # Check if the checker class accepts 'args' parameter
+        if checker_config:
+            # Check what parameters the checker class accepts
             import inspect
             sig = inspect.signature(checker_class.__init__)
-            if 'args' in sig.parameters:
-                return checker_class(args=checker_config.args)
+            params = {}
+            
+            if 'args' in sig.parameters and checker_config.args:
+                params['args'] = checker_config.args
+            
+            if 'use_default_config' in sig.parameters and checker_config.use_default_config is not None:
+                params['use_default_config'] = checker_config.use_default_config
+            
+            if params:
+                return checker_class(**params)
     
     # Default: create instance without configuration
     return checker_class()

@@ -8,11 +8,11 @@
             "program": "${workspaceFolder}/main.py",
             "args": [
                 "--repo",
-                "/Users/wangyue/Code/CodeReviewData/ReviewDataset/sentry-greptile",
+                "/Users/wangyue/Code/CodeReviewData/ReviewDataset/cal.com-greptile",
                 "--base",
-                "performance-optimization-baseline",
+                "workflow-queue-base",
                 "--head",
-                "performance-enhancement-complete"
+                "workflow-queue-enhanced"
             ],
             "console": "integratedTerminal",
             "justMyCode": false,
