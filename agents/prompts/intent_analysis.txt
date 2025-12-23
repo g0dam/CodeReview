@@ -11,25 +11,6 @@ Analyze the file and provide:
 2. **Potential Risks**: A list of potential risks or issues that should be reviewed by experts. **Pay special attention to the dangerous patterns listed below** - these are high-priority risk indicators
 3. **Complexity Score**: An optional complexity score (0-100) indicating how complex the changes are
 
-## Output Format
-Return a JSON object with the following structure:
-```json
-{{
-    "intent_summary": "Brief description of the file's purpose and changes",
-    "potential_risks": [
-        {{
-            "risk_type": "null_safety|concurrency|security|business_intent|lifecycle",
-            "file_path": "{file_path}",
-            "line_number": 42,
-            "description": "Description of the potential risk",
-            "confidence": 0.5,
-            "severity": "error|warning|info",
-            "suggestion": "Optional suggestion for fixing"
-        }}
-    ],
-    "complexity_score": 65.0
-}}
-```
 
 ## Risk Categories and Dangerous Patterns
 

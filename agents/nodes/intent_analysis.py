@@ -20,6 +20,7 @@ from core.state import ReviewState, FileAnalysis, RiskItem, RiskType
 from core.llm import LLMProvider
 from core.langchain_llm import LangChainLLMAdapter
 from agents.prompts import render_prompt_template
+from util.diff_utils import generate_context_text_for_file
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,8 @@ async def intent_analysis_node(state: ReviewState) -> Dict[str, Any]:
         async with semaphore:
             try:
                 print(f"  🔍 分析中: {file_path}")
-                # Extract relevant diff section for this file
+                # Extract relevant diff section for this file with line numbers
+                # TODO： 思考一下，diff要不要传入remove行
                 file_diff = _extract_file_diff(diff_context, file_path)
                 
                 # 使用 LCEL 语法创建链：prompt | llm | parser
@@ -169,16 +171,39 @@ async def intent_analysis_node(state: ReviewState) -> Dict[str, Any]:
 
 
 def _extract_file_diff(diff_context: str, file_path: str) -> str:
-    """Extract the diff section for a specific file.
+    """Extract the diff section for a specific file with absolute line numbers.
+    
+    This function uses the unidiff library to parse the Git diff and generate
+    code context with absolute line numbers in the new file (HEAD version).
+    This enables accurate line number references in review comments.
     
     Args:
         diff_context: Full diff context.
-        file_path: Path to the file.
+        file_path: Path to the file (relative to repo root).
     
     Returns:
-        Extracted diff section for the file.
+        Formatted code context text with absolute line numbers for the new file.
+        Falls back to raw diff section if parsing fails.
     """
-    # Look for diff header: "diff --git a/path b/path" or "--- a/path"
+    try:
+        # Use diff_utils to generate context with line numbers
+        context_text = generate_context_text_for_file(
+            diff_content=diff_context,
+            file_path=file_path,
+            include_context_lines=True,
+            max_context_lines=5
+        )
+        
+        if context_text:
+            return context_text
+        else:
+            # If no context found, fall back to raw diff extraction
+            logger.debug(f"Could not generate context with line numbers for {file_path}, falling back to raw diff")
+    except Exception as e:
+        # If parsing fails, fall back to raw diff extraction
+        logger.warning(f"Failed to parse diff with line numbers for {file_path}: {e}, falling back to raw diff")
+    
+    # Fallback: Extract raw diff section using regex (original behavior)
     patterns = [
         rf"diff --git.*{re.escape(file_path)}.*?\n(.*?)(?=\ndiff --git|\Z)",
         rf"--- a/{re.escape(file_path)}.*?\n(.*?)(?=\n--- a/|\Z)",

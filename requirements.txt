@@ -19,6 +19,9 @@ langchain-core>=0.1.0  # For PromptTemplate, ChatPromptTemplate, tools, messages
 # tree-sitter>=0.20.0
 # tree-sitter-python>=0.20.0
 
+# For Git diff parsing
+unidiff>=0.7.0
+
 # Development (optional)
 # pytest>=7.0.0
 # pytest-asyncio>=0.21.0

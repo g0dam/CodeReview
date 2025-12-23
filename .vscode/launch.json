@@ -10,9 +10,9 @@
                 "--repo",
                 "/Users/wangyue/Code/CodeReviewData/ReviewDataset/cal.com-greptile",
                 "--base",
-                "workflow-queue-base",
+                "appstore-sync-refactor-base",
                 "--head",
-                "workflow-queue-enhanced"
+                "appstore-async-improvements"
             ],
             "console": "integratedTerminal",
             "justMyCode": false,
