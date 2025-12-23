@@ -6,9 +6,6 @@ __pycache__/
 
 # Project-specific
 .storage/
-log/
-*.log
-review_results.json
 
 # IDE
 .vscode/
