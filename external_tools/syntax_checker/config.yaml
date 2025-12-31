@@ -8,9 +8,12 @@ python:
   pylint:
     enabled: true
     # Pylint command-line arguments
-    # --disable=all: Disable all checks by default
-    # --enable=E0611,E0401,E1101,E0602: Enable specific error codes
-    args: "--disable=all --enable=E0611,E1101,E0602"
+    # - Keep import-error (E0401) enabled so local imports are checked
+    # - But suppress it for known third-party modules using --ignored-modules
+    args: >
+      --disable=all
+      --enable=E0611,E1101,E0602,E0401
+      --ignored-modules=pytest,arroyo,django,sentry_sdk,orjson,redis,kafka,confluent_kafka,tests
     # Error codes mapping to severity
     # E = error, W = warning, C = convention, R = refactor, I = info
     severity_map:
