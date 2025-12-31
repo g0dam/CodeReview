@@ -10,9 +10,9 @@
                 "--repo",
                 "/Users/wangyue/Code/CodeReviewData/ReviewDataset/sentry-greptile",
                 "--base",
-                "master",
+                "workflow-engine-stateful-detector-before",
                 "--head",
-                "performance-enhancement-complete"
+                "workflow-engine-stateful-detector-after"
             ],
             "console": "integratedTerminal",
             "justMyCode": false,

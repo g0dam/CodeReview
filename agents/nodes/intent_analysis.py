@@ -15,7 +15,7 @@ from core.state import ReviewState, FileAnalysis, RiskItem, RiskType
 from core.llm import LLMProvider
 from core.langchain_llm import LangChainLLMAdapter
 from agents.prompts import render_prompt_template
-from util.diff_utils import generate_context_text_for_file
+from util.diff_utils import generate_context_text_for_file, extract_file_diff
 from util.file_utils import read_file_content
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ async def intent_analysis_node(state: ReviewState) -> Dict[str, Any]:
         async with semaphore:
             try:
                 print(f"  🔍 分析中: {file_path}")
-                file_diff = _extract_file_diff(diff_context, file_path)
+                file_diff = extract_file_diff(diff_context, file_path)
                 
                 # 读取文件内容
                 file_content = read_file_content(file_path, config)
@@ -149,43 +149,6 @@ async def intent_analysis_node(state: ReviewState) -> Dict[str, Any]:
     }
 
 
-def _extract_file_diff(diff_context: str, file_path: str) -> str:
-    """提取指定文件的 diff 片段（包含绝对行号）。
-    
-    使用 unidiff 解析 Git diff，生成包含新文件绝对行号的代码上下文。
-    如果解析失败，回退到原始 diff 片段。
-    """
-    try:
-        # Use diff_utils to generate context with line numbers
-        context_text = generate_context_text_for_file(
-            diff_content=diff_context,
-            file_path=file_path,
-            include_context_lines=True,
-            max_context_lines=5
-        )
-        
-        if context_text:
-            return context_text
-        else:
-            # If no context found, fall back to raw diff extraction
-            logger.debug(f"Could not generate context with line numbers for {file_path}, falling back to raw diff")
-    except Exception as e:
-        # If parsing fails, fall back to raw diff extraction
-        logger.warning(f"Failed to parse diff with line numbers for {file_path}: {e}, falling back to raw diff")
-    
-    # Fallback: Extract raw diff section using regex (original behavior)
-    patterns = [
-        rf"diff --git.*{re.escape(file_path)}.*?\n(.*?)(?=\ndiff --git|\Z)",
-        rf"--- a/{re.escape(file_path)}.*?\n(.*?)(?=\n--- a/|\Z)",
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, diff_context, re.DOTALL)
-        if match:
-            return match.group(0)
-    
-    # If no specific section found, return a portion of the diff
-    return diff_context[:1000] if diff_context else ""
 
 
 def _parse_intent_analysis_response(response: str, file_path: str) -> FileAnalysis:

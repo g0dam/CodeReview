@@ -6,16 +6,18 @@
 - **检测视角**：静态分析工具（如 Pylint, Ruff, ESLint）的检测结果。
 
 ## Input
-- Risk Type: {risk_type}
-- File Path: {file_path}
-- Line Number: {line_number} (格式："10:15" 表示范围，"10:10" 表示单行)
-- Description: {description}
-- File Diff: {diff_context}
-- File Content: {file_content}
+以下所有字段都是针对**当前正在分析的文件**（{file_path}）的信息：
+
+- **Risk Type** ({risk_type}): 风险类型，标识当前需要分析的风险类别
+- **File Path** ({file_path}): 当前分析的文件路径（相对于仓库根目录）
+- **Line Number** ({line_number}): 风险所在的行号范围，格式为 "10:15"（多行）或 "10:10"（单行）
+- **Description** ({description}): 风险描述，说明检测到的潜在问题
+- **File Diff** ({diff_context}): 当前文件在本次变更中的 diff 片段，包含带行号的代码变更上下文（新增/修改/删除的行）
+- **File Content** ({file_content}): 当前文件的完整内容（HEAD 版本），用于理解完整的代码上下文
 
 ## Available Tools
 你可以使用以下工具来获取更多上下文信息：
-- **read_file**: 读取文件内容以理解完整上下文
+{available_tools}
 
 使用工具时，请按以下格式提交请求:
 ```

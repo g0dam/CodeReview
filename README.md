@@ -55,7 +55,34 @@ pip install openai
 pip install pyyaml
 ```
 
-4. 配置 DeepSeek（如使用）：
+4. 安装外部语法检查工具（可选，用于静态分析）：
+   
+   **Python 检查器：**
+   - Ruff（推荐，快速）：
+     ```bash
+     pip install ruff
+     ```
+   - 或 Pylint：
+     ```bash
+     pip install pylint
+     ```
+   
+   **TypeScript/JavaScript 检查器：**
+   - 安装 ESLint（全局或本地）：
+     ```bash
+     # 全局安装
+     npm install -g eslint
+     
+     # 或本地安装（推荐）
+     npm install eslint
+     ```
+   - 对于 TypeScript 支持（可选，如果审查 TypeScript 代码）：
+     ```bash
+     npm install @typescript-eslint/parser @typescript-eslint/eslint-plugin typescript
+     ```
+     注意：如果项目已有 `package.json`，这些依赖可能已包含在 `devDependencies` 中。
+
+5. 配置 DeepSeek（如使用）：
    - 在 `~/.zshrc` 中设置 `DEEPSEEK_API_KEY` 环境变量：
      ```bash
      export DEEPSEEK_API_KEY="your-deepseek-api-key"

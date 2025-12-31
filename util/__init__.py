@@ -24,6 +24,7 @@ from util.diff_utils import (
     parse_diff_with_line_numbers,
     get_file_context_with_line_numbers,
     generate_context_text_for_file,
+    extract_file_diff,
     FileContext,
 )
 
@@ -42,5 +43,6 @@ __all__ = [
     "parse_diff_with_line_numbers",
     "get_file_context_with_line_numbers",
     "generate_context_text_for_file",
+    "extract_file_diff",
     "FileContext",
 ]

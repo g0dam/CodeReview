@@ -19,6 +19,7 @@ from core.langchain_llm import LangChainLLMAdapter
 from core.config import Config
 from tools.repo_tools import FetchRepoMapTool
 from tools.file_tools import ReadFileTool
+from tools.grep_tool import GrepTool
 from tools.langchain_tools import create_tools_with_context
 from agents.nodes.intent_analysis import intent_analysis_node
 from agents.nodes.manager import manager_node
@@ -49,7 +50,8 @@ def create_multi_agent_workflow(
     asset_key = config.system.asset_key
     tools = [
         # FetchRepoMapTool(asset_key=asset_key),
-        ReadFileTool(workspace_root=workspace_root)
+        ReadFileTool(workspace_root=workspace_root),
+        GrepTool(workspace_root=workspace_root)
     ]
     
     langchain_tools = create_tools_with_context(

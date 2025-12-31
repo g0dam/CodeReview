@@ -14,8 +14,10 @@ from core.llm import LLMProvider
 from core.config import Config
 from tools.repo_tools import FetchRepoMapTool
 from tools.file_tools import ReadFileTool
+from tools.grep_tool import GrepTool
 from agents.prompts import render_prompt_template
 from util.file_utils import read_file_content
+from util.diff_utils import extract_file_diff
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +88,9 @@ async def expert_execution_node(state: ReviewState) -> Dict[str, Any]:
         workspace_root = config.system.workspace_root
         asset_key = config.system.asset_key
         tools = [
-            FetchRepoMapTool(asset_key=asset_key),
-            ReadFileTool(workspace_root=workspace_root)
+            # FetchRepoMapTool(asset_key=asset_key),
+            ReadFileTool(workspace_root=workspace_root),
+            GrepTool(workspace_root=workspace_root)
         ]
     
     # Execute all expert groups in parallel
@@ -234,7 +237,6 @@ async def _process_risk_item(
     # Initialize expert analysis log entry
     expert_analysis = {
         "risk_type": risk_type_str,
-        # "risk_item": risk_item.model_dump(),
         "file_path": risk_item.file_path,
         "line_number": risk_item.line_number,
         "conversation_turns": [],
@@ -255,7 +257,14 @@ async def _process_risk_item(
         config = global_state.get("metadata", {}).get("config")
         file_content = read_file_content(risk_item.file_path, config) if config else ""
         
-        try:
+        # Format available tools with descriptions
+        tool_descriptions = []
+        for tool_name, tool in tool_dict.items():
+            description = getattr(tool, 'description', f'Tool: {tool_name}')
+            tool_descriptions.append(f"- **{tool_name}**: {description}")
+        available_tools_text = "\n".join(tool_descriptions)
+        
+        try: 
             initial_prompt = render_prompt_template(
                 f"expert_{risk_type_str}",
                 risk_type=risk_type_str,
@@ -263,9 +272,9 @@ async def _process_risk_item(
                 file_path=risk_item.file_path,
                 line_number=line_number_str,  # Format as string for prompt display
                 description=risk_item.description,
-                diff_context=_extract_file_diff(diff_context, risk_item.file_path),
+                diff_context=extract_file_diff(diff_context, risk_item.file_path),
                 file_content=file_content,
-                available_tools=", ".join(tool_dict.keys()),
+                available_tools=available_tools_text,
                 validation_logic_examples=""  # 占位符，用户会在模板文件中手动填写内容
             )
         except FileNotFoundError:
@@ -277,9 +286,9 @@ async def _process_risk_item(
                 file_path=risk_item.file_path,
                 line_number=line_number_str,  # Format as string for prompt display
                 description=risk_item.description,
-                diff_context=_extract_file_diff(diff_context, risk_item.file_path),
+                diff_context=extract_file_diff(diff_context, risk_item.file_path),
                 file_content=file_content,
-                available_tools=", ".join(tool_dict.keys())
+                available_tools=available_tools_text
             )
         
         # Start conversation loop
@@ -449,21 +458,6 @@ async def _process_risk_item(
             global_state["metadata"]["expert_analyses"] = []
         global_state["metadata"]["expert_analyses"].append(expert_analysis)
         return None
-
-
-def _extract_file_diff(diff_context: str, file_path: str) -> str:
-    """Extract the diff section for a specific file."""
-    patterns = [
-        rf"diff --git.*{re.escape(file_path)}.*?\n(.*?)(?=\ndiff --git|\Z)",
-        rf"--- a/{re.escape(file_path)}.*?\n(.*?)(?=\n--- a/|\Z)",
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, diff_context, re.DOTALL)
-        if match:
-            return match.group(0)
-    
-    return diff_context[:1000] if diff_context else ""
 
 
 def _extract_tool_calls(response: str) -> List[Dict[str, Any]]:
