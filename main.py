@@ -11,8 +11,8 @@
 
 import asyncio
 import argparse
-import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -30,8 +30,7 @@ from util import (
     validate_repo_path,
     ensure_head_version,
 )
-from util.pr_utils import make_results_serializable
-from util.git_utils import extract_files_from_diff, get_changed_files, get_git_diff
+from util.git_utils import extract_files_from_diff, get_changed_files, get_git_diff, get_repo_name
 
 
 
@@ -333,7 +332,13 @@ async def run_review(
     if not changed_files:
         log("  ⚠️  Warning: No changed files detected, workflow may not produce results")
     
-
+    # Generate timestamp for this run (used for both log and results files)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Sanitize branch names for filesystem
+    base_sanitized = base_branch.replace("/", "_").replace("\\", "_").replace("..", "").replace(" ", "_")
+    head_sanitized = head_branch.replace("/", "_").replace("\\", "_").replace("..", "").replace(" ", "_")
+    
     # TODO: 临时调试 屏蔽lint_errors
     lint_errors = []
     try:
@@ -344,18 +349,41 @@ async def run_review(
             lint_errors=lint_errors
         )
         
-        # Print results
+        # Print results (pass timestamp so log file uses same timestamp)
         if not quiet:
-            print_review_results(results, workspace_root=repo_path, config=config)
+            print_review_results(
+                results, 
+                workspace_root=repo_path, 
+                config=config,
+                base_branch=base_branch,
+                head_branch=head_branch,
+                timestamp=timestamp
+            )
         
-        # Save results to file (clean non-serializable objects from metadata)
-        output_file = Path(output_file)
+        # Generate output directory and filename based on repo_name and model_name
+        repo_name = get_repo_name(repo_path)
+        repo_name = repo_name.replace("/", "_").replace("\\", "_").replace("..", "")
         
-        # Create a serializable copy of results
-        serializable_results = make_results_serializable(results)
+        model_name = config.llm.provider or "unknown"
+        model_name = model_name.replace("/", "_").replace("\\", "_")
         
+        # Create output directory: log/repo_name/model_name/{base}_2_{head}_{timestamp}/
+        output_dir = Path("log") / repo_name / model_name / f"{base_sanitized}_2_{head_sanitized}_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename: review_results_{base}_2_{head}.md (no timestamp in filename)
+        output_filename = f"review_results_{base_sanitized}_2_{head_sanitized}.md"
+        output_file = output_dir / output_filename
+        
+        # Get final_report from results
+        final_report = results.get("final_report", "")
+        
+        # Write final_report as markdown file
         with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(serializable_results, f, indent=2, ensure_ascii=False)
+            if final_report:
+                f.write(final_report)
+            else:
+                f.write("# Code Review Report\n\nNo issues found.\n")
         log(f"\n💾 Results saved to: {output_file}")
         
     except Exception as e:

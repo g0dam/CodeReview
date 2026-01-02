@@ -9,8 +9,29 @@ from core.config import Config
 from util.git_utils import get_repo_name, get_git_info
 
 
-def _get_log_directory(workspace_root: Path, config: Config, metadata: dict) -> Path:
-    """获取当前运行的日志目录路径。"""
+def _get_log_directory(
+    workspace_root: Path, 
+    config: Config, 
+    metadata: dict,
+    base_branch: Optional[str] = None,
+    head_branch: Optional[str] = None,
+    timestamp: Optional[str] = None
+) -> Path:
+    """获取当前运行的日志目录路径。
+    
+    返回目录结构: log/repo_name/model_name/{base}_2_{head}_{timestamp}/
+    
+    Args:
+        workspace_root: 工作区根目录。
+        config: 配置对象。
+        metadata: 结果元数据。
+        base_branch: base分支名（可选）。
+        head_branch: head分支名（可选）。
+        timestamp: 时间戳字符串（可选），如果没有提供则生成新的。
+    
+    Returns:
+        日志目录路径。
+    """
     # Get repo name
     repo_name = get_repo_name(workspace_root)
     # Sanitize repo name for filesystem
@@ -23,22 +44,23 @@ def _get_log_directory(workspace_root: Path, config: Config, metadata: dict) -> 
     # Sanitize model name
     model_name = model_name.replace("/", "_").replace("\\", "_")
     
-    # Get current branch name from Git
-    branch_name, _ = get_git_info(workspace_root)
-    if branch_name:
-        # Sanitize branch name for filesystem
-        branch_name = branch_name.replace("/", "_").replace("\\", "_").replace("..", "").replace(" ", "_")
-        # Limit length to avoid filesystem issues
-        if len(branch_name) > 50:
-            branch_name = branch_name[:50]
+    # Sanitize branch names for filesystem
+    if base_branch:
+        base_sanitized = base_branch.replace("/", "_").replace("\\", "_").replace("..", "").replace(" ", "_")
     else:
-        branch_name = "unknown"
+        base_sanitized = "unknown"
     
-    # Generate timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if head_branch:
+        head_sanitized = head_branch.replace("/", "_").replace("\\", "_").replace("..", "").replace(" ", "_")
+    else:
+        head_sanitized = "unknown"
     
-    # Create log directory structure: log/repo_name/model_name/branch_name_timestamp
-    log_dir = Path("log") / repo_name / model_name / f"{branch_name}_{timestamp}"
+    # Generate timestamp if not provided
+    if not timestamp:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Create log directory structure: log/repo_name/model_name/{base}_2_{head}_{timestamp}/
+    log_dir = Path("log") / repo_name / model_name / f"{base_sanitized}_2_{head_sanitized}_{timestamp}"
     log_dir.mkdir(parents=True, exist_ok=True)
     
     return log_dir
@@ -47,12 +69,26 @@ def _get_log_directory(workspace_root: Path, config: Config, metadata: dict) -> 
 def save_observations_to_log(
     results: dict,
     workspace_root: Path,
-    config: Config
+    config: Config,
+    base_branch: Optional[str] = None,
+    head_branch: Optional[str] = None,
+    timestamp: Optional[str] = None
 ) -> Optional[Path]:
     """将智能体观察保存到日志文件。
     
     只保存 expert_analyses.log，不再保存 observations.log。
-    日志文件结构：log/repo_name/model_name/timestamp/expert_analyses.log
+    日志文件结构：log/repo_name/model_name/{base}_2_{head}_{timestamp}/log_{base}_2_{head}.log
+    
+    Args:
+        results: 审查结果字典。
+        workspace_root: 工作区根目录。
+        config: 配置对象。
+        base_branch: base分支名（可选）。
+        head_branch: head分支名（可选）。
+        timestamp: 时间戳字符串（可选），用于确保log和results使用相同的时间戳。
+    
+    Returns:
+        日志文件路径，如果没有expert_analyses则返回None。
     """
     metadata = results.get("metadata", {})
     expert_analyses = metadata.get("expert_analyses", [])
@@ -61,15 +97,35 @@ def save_observations_to_log(
     if not expert_analyses:
         return None
     
-    # Get log directory
-    log_dir = _get_log_directory(workspace_root, config, metadata)
+    # Sanitize branch names for filesystem
+    if base_branch:
+        base_sanitized = base_branch.replace("/", "_").replace("\\", "_").replace("..", "").replace(" ", "_")
+    else:
+        base_sanitized = "unknown"
+    
+    if head_branch:
+        head_sanitized = head_branch.replace("/", "_").replace("\\", "_").replace("..", "").replace(" ", "_")
+    else:
+        head_sanitized = "unknown"
+    
+    # Get log directory (with timestamp subdirectory)
+    log_dir = _get_log_directory(
+        workspace_root, 
+        config, 
+        metadata,
+        base_branch=base_branch,
+        head_branch=head_branch,
+        timestamp=timestamp
+    )
     repo_name = get_repo_name(workspace_root).replace("/", "_").replace("\\", "_").replace("..", "")
     model_name = metadata.get("config_provider", config.llm.provider) or "unknown"
     model_name = model_name.replace("/", "_").replace("\\", "_")
     
     # Save expert analyses to separate file
     if expert_analyses:
-        expert_log_file = log_dir / "expert_analyses.log"
+        # Generate log filename: log_{base}_2_{head}.log (no timestamp in filename)
+        log_filename = f"log_{base_sanitized}_2_{head_sanitized}.log"
+        expert_log_file = log_dir / log_filename
         with open(expert_log_file, "w", encoding="utf-8") as f:
             f.write(f"Expert Analysis Log\n")
             f.write(f"{'=' * 80}\n")
@@ -160,7 +216,41 @@ def save_observations_to_log(
                             content = getattr(msg, 'content', str(msg))
                             if content:
                                 f.write(f"Content:\n{content}\n")
-                            # 不输出 tool_calls，因为工具调用信息已经在 ToolMessage 的 content 中
+                            
+                            # Print tool_calls if present
+                            tool_calls = getattr(msg, 'tool_calls', None)
+                            if tool_calls:
+                                f.write(f"Tool Calls:\n")
+                                try:
+                                    # Try to convert tool_calls to serializable format
+                                    # LangChain tool_calls is typically a list of objects with id, name, args
+                                    if isinstance(tool_calls, list):
+                                        # Convert each tool call to dict if it's an object
+                                        tool_calls_serializable = []
+                                        for tc in tool_calls:
+                                            if hasattr(tc, 'model_dump'):
+                                                # Pydantic model
+                                                tool_calls_serializable.append(tc.model_dump())
+                                            elif hasattr(tc, '__dict__'):
+                                                # Regular object, extract common attributes
+                                                tool_calls_serializable.append({
+                                                    'id': getattr(tc, 'id', None),
+                                                    'name': getattr(tc, 'name', None),
+                                                    'args': getattr(tc, 'args', {})
+                                                })
+                                            else:
+                                                # Already serializable
+                                                tool_calls_serializable.append(tc)
+                                        f.write(f"{json.dumps(tool_calls_serializable, indent=2, ensure_ascii=False)}\n")
+                                    elif isinstance(tool_calls, dict):
+                                        f.write(f"{json.dumps(tool_calls, indent=2, ensure_ascii=False)}\n")
+                                    else:
+                                        # Fallback to string representation
+                                        f.write(f"{str(tool_calls)}\n")
+                                except (TypeError, ValueError):
+                                    # If serialization fails, write as string
+                                    f.write(f"{str(tool_calls)}\n")
+                            
                             f.write(f"\n")
                         
                         elif msg_type == "ToolMessage":

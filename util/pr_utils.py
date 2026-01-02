@@ -28,8 +28,24 @@ def load_diff_from_file(file_path: Path) -> str:
         raise IOError(f"Error reading diff file: {e}")
 
 
-def print_review_results(results: dict, workspace_root: Optional[Path] = None, config: Optional[Config] = None) -> None:
-    """以格式化方式打印审查结果。"""
+def print_review_results(
+    results: dict, 
+    workspace_root: Optional[Path] = None, 
+    config: Optional[Config] = None,
+    base_branch: Optional[str] = None,
+    head_branch: Optional[str] = None,
+    timestamp: Optional[str] = None
+) -> None:
+    """以格式化方式打印审查结果。
+    
+    Args:
+        results: 审查结果字典。
+        workspace_root: 工作区根目录（可选）。
+        config: 配置对象（可选）。
+        base_branch: base分支名（可选）。
+        head_branch: head分支名（可选）。
+        timestamp: 时间戳字符串（可选），用于确保log和results使用相同的时间戳。
+    """
     print("\n" + "=" * 80)
     print("CODE REVIEW RESULTS")
     print("=" * 80)
@@ -126,7 +142,14 @@ def print_review_results(results: dict, workspace_root: Optional[Path] = None, c
     # Save observations and expert analyses to log files
     if workspace_root and config:
         try:
-            log_file = save_observations_to_log(results, workspace_root, config)
+            log_file = save_observations_to_log(
+                results, 
+                workspace_root, 
+                config,
+                base_branch=base_branch,
+                head_branch=head_branch,
+                timestamp=timestamp
+            )
             if log_file:
                 print(f"\n📝 Logs saved:")
                 print(f"   • Expert Analyses: {log_file}")
@@ -139,88 +162,31 @@ def print_review_results(results: dict, workspace_root: Optional[Path] = None, c
 def make_results_serializable(obj: dict) -> dict:
     """移除字典中的不可序列化对象（如 ChatModel、Config、tools）。
     
-    同时优化结果结构：
-    - 移除 diff_context 字段
-    - 移除 confirmed_issues 字段
-    - 移除 metadata 字段
-    - 合并 work_list, expert_tasks, expert_results 为 risk_analyses 字段
-    - final_report 字段放在最后
-    - risk_analyses 中不包含 validated_item
+    简化结果结构，只保留最终报告和基本信息：
+    - 保留 changed_files 字段（基本信息）
+    - 保留 final_report 字段（最终报告）
+    - 移除所有其他详细数据（diff_context, metadata, work_list, expert_tasks, expert_results, confirmed_issues, risk_analyses 等）
     
     Args:
         obj: 可能包含不可序列化对象的字典。
     
     Returns:
-        仅包含可序列化值的字典。
+        仅包含可序列化值的简化字典。
     """
     if not isinstance(obj, dict):
         return obj
     
     result = {}
-    for key, value in obj.items():
-        # Remove diff_context field
-        if key == "diff_context":
-            continue
-        
-        if key == "metadata":
-            # Skip metadata - we'll access expert_analyses from it but not include it in output
-            continue
-        elif key in ["work_list", "expert_tasks", "expert_results", "confirmed_issues"]:
-            # Skip these keys - they will be merged into risk_analyses or removed
-            continue
-        elif key == "final_report":
-            # Skip final_report here - will be added at the end
-            continue
-        elif isinstance(value, dict):
-            result[key] = make_results_serializable(value)
-        elif isinstance(value, list):
-            result[key] = [
-                make_results_serializable(item) if isinstance(item, dict) else item
-                for item in value
-            ]
+    
+    # Only keep basic information: changed_files
+    if "changed_files" in obj:
+        changed_files = obj["changed_files"]
+        if isinstance(changed_files, list):
+            result["changed_files"] = changed_files
         else:
-            # Try to serialize, skip if not serializable
-            try:
-                json.dumps(value)
-                result[key] = value
-            except (TypeError, ValueError):
-                result[key] = str(value)
+            result["changed_files"] = []
     
-    # Merge work_list, expert_tasks, expert_results into risk_analyses
-    expert_analyses = obj.get("metadata", {}).get("expert_analyses", [])
-    if expert_analyses:
-        # Create a map from (file_path, line_number, risk_type) to expert_analysis
-        analysis_map = {}
-        for analysis in expert_analyses:
-            file_path = analysis.get("file_path", "")
-            line_number = analysis.get("line_number", [0, 0])
-            risk_type = analysis.get("risk_type", "")
-            key = (file_path, tuple(line_number) if isinstance(line_number, list) else line_number, risk_type)
-            analysis_map[key] = analysis
-        
-        # Build risk_analyses list by matching work_list items with expert_analyses
-        risk_analyses = []
-        work_list = obj.get("work_list", [])
-        
-        for risk_item in work_list:
-            file_path = risk_item.get("file_path", "")
-            line_number = risk_item.get("line_number", [0, 0])
-            risk_type = risk_item.get("risk_type", "")
-            key = (file_path, tuple(line_number) if isinstance(line_number, list) else line_number, risk_type)
-            
-            analysis = analysis_map.get(key, {})
-            
-            # Build merged entry (without validated_item)
-            merged_entry = {
-                "risk_item": risk_item,  # 原始风险项
-                "result": analysis.get("result", {}),  # 分析结果
-                "messages": serialize_messages(analysis.get("messages", []))  # 对话历史
-            }
-            risk_analyses.append(merged_entry)
-        
-        result["risk_analyses"] = risk_analyses
-    
-    # Add final_report at the end
+    # Keep final_report (the main output)
     final_report = obj.get("final_report", "")
     if final_report:
         result["final_report"] = final_report
