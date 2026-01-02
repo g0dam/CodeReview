@@ -6,12 +6,13 @@ import logging
 from typing import List, Optional, Any
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.language_models import BaseChatModel
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from core.state import RiskItem, ExpertState
-from core.langchain_llm import LangChainLLMAdapter
 from langchain_core.tools import BaseTool
 from agents.prompts import render_prompt_template
+from util.json_utils import extract_json_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def tools_condition(state: ExpertState) -> str:
 
 
 def build_expert_graph(
-    llm: LangChainLLMAdapter,
+    llm: BaseChatModel,
     tools: List[BaseTool],
 ) -> Any:
     """构建专家分析子图。
@@ -81,9 +82,8 @@ def build_expert_graph(
     3. 条件路由：根据是否有工具调用决定继续或结束
     
     Args:
-        llm: LangChain LLM 适配器。
+        llm: LangChain 标准 ChatModel。
         tools: LangChain 工具列表。
-        risk_type_str: 风险类型字符串（用于渲染提示词模板）。
     
     Returns:
         编译后的 LangGraph 子图。
@@ -244,12 +244,20 @@ async def run_expert_analysis(
         last_message = messages[-1]
         response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
         
-        # 使用 PydanticOutputParser 解析结果
-        try:
-            result: RiskItem = parser.parse(response_text)
-        except Exception as e:
-            logger.warning(f"PydanticOutputParser failed to parse response: {e}")
+        # 从响应文本中提取 JSON
+        json_text = extract_json_from_text(response_text)
+        if not json_text:
+            logger.warning("Could not extract JSON from response")
             logger.warning(f"Response text (first 500 chars): {response_text[:500]}")
+            return None
+        
+        # 使用 PydanticOutputParser 解析提取的 JSON
+        try:
+            result: RiskItem = parser.parse(json_text)
+        except Exception as e:
+            logger.warning(f"PydanticOutputParser failed to parse extracted JSON: {e}")
+            logger.warning(f"Extracted JSON (first 500 chars): {json_text[:500]}")
+            logger.warning(f"Original response (first 500 chars): {response_text[:500]}")
             return None
         
         return {

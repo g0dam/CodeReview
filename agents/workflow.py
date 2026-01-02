@@ -13,9 +13,9 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import HumanMessage
+from langchain_core.language_models import BaseChatModel
 from core.state import ReviewState
-from core.llm import LLMProvider
-from core.langchain_llm import LangChainLLMAdapter
+from core.llm_factory import create_chat_model
 from core.config import Config
 from tools.langchain_tools import create_tools_with_context
 from agents.nodes.intent_analysis import intent_analysis_node
@@ -39,9 +39,8 @@ def create_multi_agent_workflow(
     Returns:
         编译后的 LangGraph 工作流。
     """
-    # Initialize LLM provider
-    llm_provider = LLMProvider(config.llm)
-    llm_adapter = LangChainLLMAdapter(llm_provider=llm_provider)
+    # Initialize LLM using factory function
+    llm = create_chat_model(config.llm)
     
     workspace_root = config.system.workspace_root
     asset_key = config.system.asset_key
@@ -95,8 +94,7 @@ def create_multi_agent_workflow(
     # Wrap nodes to inject dependencies
     return _wrap_workflow_with_dependencies(
         compiled, 
-        llm_provider, 
-        llm_adapter,
+        llm,
         config, 
         langchain_tools
     )
@@ -128,8 +126,7 @@ def route_to_experts(state: ReviewState) -> str:
 
 def _wrap_workflow_with_dependencies(
     compiled_graph: Any,
-    llm_provider: LLMProvider,
-    llm_adapter: LangChainLLMAdapter,
+    llm: BaseChatModel,
     config: Config,
     langchain_tools: List[Any]
 ) -> Any:
@@ -149,8 +146,7 @@ def _wrap_workflow_with_dependencies(
         if "metadata" not in state:
             state["metadata"] = {}
         
-        state["metadata"]["llm_provider"] = llm_provider
-        state["metadata"]["llm_adapter"] = llm_adapter
+        state["metadata"]["llm"] = llm
         state["metadata"]["config"] = config
         state["metadata"]["langchain_tools"] = langchain_tools
         
@@ -165,8 +161,7 @@ def _wrap_workflow_with_dependencies(
         if "metadata" not in state:
             state["metadata"] = {}
         
-        state["metadata"]["llm_provider"] = llm_provider
-        state["metadata"]["llm_adapter"] = llm_adapter
+        state["metadata"]["llm"] = llm
         state["metadata"]["config"] = config
         state["metadata"]["langchain_tools"] = langchain_tools
         

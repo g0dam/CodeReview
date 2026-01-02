@@ -137,7 +137,7 @@ def print_review_results(results: dict, workspace_root: Optional[Path] = None, c
 
 
 def make_results_serializable(obj: dict) -> dict:
-    """移除字典中的不可序列化对象（如 LLMProvider、Config、tools）。
+    """移除字典中的不可序列化对象（如 ChatModel、Config、tools）。
     
     同时优化结果结构：
     - 移除 diff_context 字段

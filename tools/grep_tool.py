@@ -5,6 +5,7 @@
 
 import functools
 import fnmatch
+import json
 import os
 import re
 from pathlib import Path
@@ -186,13 +187,16 @@ def _grep_internal(
                         ctx_line = lines[ctx_line_num - 1]  # 转换为 0-based 索引
                         context_lines_list.append(f"{ctx_line_num}: {ctx_line.rstrip()}")
                     
-                    # 构建结果块
+                    # 构建结果块（JSON 格式）
                     relative_path = file_path.relative_to(repo_path)
-                    result_block = f"""File: {relative_path}
-                        Match: Line {line_num}: {line.rstrip()}
-                        Context (Lines {start_line}-{end_line}):
-                        {"\n".join(context_lines_list)}
-                        --------------------------------------------------"""
+                    result_block = {
+                        "file": str(relative_path),
+                        "line_number": line_num,
+                        "matched_line": line.rstrip(),
+                        "context_start_line": start_line,
+                        "context_end_line": end_line,
+                        "context": context_lines_list
+                    }
                     
                     results.append(result_block)
                     result_count += 1
@@ -207,9 +211,9 @@ def _grep_internal(
             break
     
     if not results:
-        return f"No matches found for pattern: {pattern}"
+        return json.dumps({"matches": [], "message": f"No matches found for pattern: {pattern}"}, ensure_ascii=False, indent=2)
     
-    return "\n\n".join(results)
+    return json.dumps({"matches": results, "total": len(results)}, ensure_ascii=False, indent=2)
 
 
 @tool
@@ -222,10 +226,10 @@ async def run_grep(
     context_lines: int = 10,
     max_results: int = 50,
 ) -> str:
-    """Search for a string or regex in the codebase. Returns the file path, the specific matched line, and the surrounding code context.
+    """Search for a string or regex in the codebase. Returns JSON with file paths, matched lines, and surrounding context.
     
     This tool searches through the codebase for a given pattern (string or regex) and returns
-    structured results with file paths, matched lines, and surrounding context.
+    structured JSON results with file paths, matched lines, and surrounding context.
     
     Args:
         pattern: The search pattern (string or regex).
@@ -237,11 +241,17 @@ async def run_grep(
         max_results: Maximum number of match blocks to return. Default is 50.
     
     Returns:
-        A formatted string containing all matches with their file paths, matched lines, and context.
-        Each match block is separated by a delimiter line.
+        A JSON string containing matches array and total count. Each match contains:
+        - file: Relative file path
+        - line_number: Line number of the match
+        - matched_line: The matched line content
+        - context_start_line: Start line of context
+        - context_end_line: End line of context
+        - context: List of context lines with line numbers
     
     Example:
         result = await run_grep("def main", include_patterns=["*.py"], context_lines=5)
+        # Returns JSON: {"matches": [...], "total": 5}
     """
     # 获取仓库根目录
     repo_root = os.getenv("REPO_ROOT") or os.getcwd()

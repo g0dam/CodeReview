@@ -8,9 +8,9 @@ import asyncio
 import logging
 import json
 from typing import Dict, Any, List, Optional
+from langchain_core.language_models import BaseChatModel
 from core.state import ReviewState, RiskItem, RiskType
-from core.llm import LLMProvider
-from core.langchain_llm import LangChainLLMAdapter
+from core.llm_factory import create_chat_model
 from core.config import Config
 from agents.expert_graph import build_expert_graph, create_langchain_tools, run_expert_analysis
 from util.file_utils import read_file_content
@@ -39,12 +39,7 @@ async def expert_execution_node(state: ReviewState) -> Dict[str, Any]:
     print("="*80)
     
     # Get dependencies from metadata
-    llm_provider: LLMProvider = state.get("metadata", {}).get("llm_provider")
     config: Config = state.get("metadata", {}).get("config")
-    
-    if not llm_provider:
-        logger.error("LLM provider not found in metadata")
-        return {"expert_results": {}}
     
     if not config:
         logger.error("Config not found in metadata")
@@ -89,7 +84,7 @@ async def expert_execution_node(state: ReviewState) -> Dict[str, Any]:
             risk_type_str=risk_type_str,
             tasks=risk_items,
             global_state=state,
-            llm_provider=llm_provider,
+            config=config,
             semaphore=semaphore,
             diff_context=diff_context
         )
@@ -134,7 +129,7 @@ async def run_expert_group(
     risk_type_str: str,
     tasks: List[RiskItem],
     global_state: ReviewState,
-    llm_provider: LLMProvider,
+    config: Config,
     semaphore: asyncio.Semaphore,
     diff_context: str
 ) -> List[RiskItem]:
@@ -147,7 +142,7 @@ async def run_expert_group(
         risk_type_str: Risk type as string (e.g., "null_safety", "concurrency", "security").
         tasks: List of RiskItem objects to process.
         global_state: Global workflow state for context.
-        llm_provider: LLM provider instance.
+        config: Configuration object.
         semaphore: Semaphore for concurrency control.
         diff_context: Full diff context.
     
@@ -160,11 +155,10 @@ async def run_expert_group(
     print(f"    🔍 [{risk_type_str}] 开始处理 {len(tasks)} 个任务...")
     
     try:
-        # 创建 LangChain LLM 适配器
-        llm_adapter = LangChainLLMAdapter(llm_provider=llm_provider)
+        # 创建标准 ChatModel
+        llm = create_chat_model(config.llm)
         
-        # 获取配置和工作区根目录
-        config = global_state.get("metadata", {}).get("config")
+        # 获取工作区根目录
         workspace_root = str(config.system.workspace_root) if config else None
         asset_key = config.system.asset_key if config else None
         
@@ -191,7 +185,7 @@ async def run_expert_group(
                 
                 # 构建专家子图（系统提示词在 reasoner 节点内部动态构建）
                 expert_graph = build_expert_graph(
-                    llm=llm_adapter,
+                    llm=llm,
                     tools=langchain_tools,
                 )
                 

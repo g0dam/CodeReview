@@ -8,8 +8,8 @@ import logging
 from typing import Dict, Any, List
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.language_models import BaseChatModel
 from core.state import ReviewState, RiskItem, RiskType, WorkListResponse
-from core.langchain_llm import LangChainLLMAdapter
 from agents.prompts import render_prompt_template
 from collections import defaultdict
 
@@ -26,16 +26,11 @@ async def manager_node(state: ReviewState) -> Dict[str, Any]:
     print("👔 [节点2] Manager - 生成任务列表并分组")
     print("="*80)
     
-    # 获取 LangChain LLM 适配器（从 metadata）
-    llm_adapter: LangChainLLMAdapter = state.get("metadata", {}).get("llm_adapter")
-    if not llm_adapter:
-        # 如果没有适配器，从 llm_provider 创建
-        llm_provider = state.get("metadata", {}).get("llm_provider")
-        if llm_provider:
-            llm_adapter = LangChainLLMAdapter(llm_provider=llm_provider)
-        else:
-            logger.error("LLM provider not found in metadata")
-            return {"work_list": [], "expert_tasks": {}}
+    # 获取 LLM（从 metadata）
+    llm: BaseChatModel = state.get("metadata", {}).get("llm")
+    if not llm:
+        logger.error("LLM not found in metadata")
+        return {"work_list": [], "expert_tasks": {}}
     
     file_analyses_dicts = state.get("file_analyses", [])
     diff_context = state.get("diff_context", "")

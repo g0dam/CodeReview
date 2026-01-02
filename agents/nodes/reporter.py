@@ -5,8 +5,9 @@
 
 import logging
 from typing import Dict, Any, List
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.language_models import BaseChatModel
 from core.state import ReviewState, RiskItem
-from core.llm import LLMProvider
 from agents.prompts import render_prompt_template
 
 logger = logging.getLogger(__name__)
@@ -22,11 +23,11 @@ async def reporter_node(state: ReviewState) -> Dict[str, Any]:
     print("📊 [节点4] Reporter - 生成最终报告")
     print("="*80)
     
-    # Get LLM provider from metadata
-    llm_provider: LLMProvider = state.get("metadata", {}).get("llm_provider")
-    if not llm_provider:
-        logger.error("LLM provider not found in metadata")
-        return {"confirmed_issues": [], "final_report": "Error: LLM provider not available"}
+    # Get LLM from metadata
+    llm: BaseChatModel = state.get("metadata", {}).get("llm")
+    if not llm:
+        logger.error("LLM not found in metadata")
+        return {"confirmed_issues": [], "final_report": "Error: LLM not available"}
     
     expert_results_dicts = state.get("expert_results", {})
     diff_context = state.get("diff_context", "")
@@ -70,7 +71,13 @@ async def reporter_node(state: ReviewState) -> Dict[str, Any]:
             num_files=len(state.get("changed_files", []))
         )
         
-        final_report = await llm_provider.generate(prompt, temperature=0.3)
+        # Use standard ChatModel interface
+        messages = [
+            SystemMessage(content="You are an expert code reviewer generating a final review report."),
+            HumanMessage(content=prompt)
+        ]
+        response = await llm.ainvoke(messages, temperature=0.3)
+        final_report = response.content if hasattr(response, 'content') else str(response)
         
         print(f"  ✅ Reporter 完成!")
         print(f"     - 报告长度: {len(final_report)} 字符")
