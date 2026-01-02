@@ -28,6 +28,7 @@ class SystemConfig(BaseModel):
     timeout_seconds: int = Field(default=600, description="Analysis timeout in seconds")
     asset_key: Optional[str] = Field(default=None, description="Asset key for repository-specific assets")
     max_concurrent_llm_requests: int = Field(default=5, ge=1, description="Maximum concurrent LLM API requests")
+    max_expert_rounds: int = Field(default=20, ge=1, description="Maximum rounds for expert analysis (circuit breaker)")
 
 
 class Config(BaseModel):
@@ -159,6 +160,11 @@ class Config(BaseModel):
         if os.getenv("MAX_CONCURRENT_LLM_REQUESTS"):
             try:
                 system_config.max_concurrent_llm_requests = int(os.getenv("MAX_CONCURRENT_LLM_REQUESTS", str(system_config.max_concurrent_llm_requests)))
+            except ValueError:
+                pass
+        if os.getenv("MAX_EXPERT_ROUNDS"):
+            try:
+                system_config.max_expert_rounds = int(os.getenv("MAX_EXPERT_ROUNDS", str(system_config.max_expert_rounds)))
             except ValueError:
                 pass
         

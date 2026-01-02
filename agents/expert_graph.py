@@ -3,13 +3,14 @@
 """
 
 import logging
-from typing import List, Optional, Any
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from typing import List, Optional, Any, Dict
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, BaseMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.language_models import BaseChatModel
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from core.state import RiskItem, ExpertState
+from core.config import Config
 from langchain_core.tools import BaseTool
 from agents.prompts import render_prompt_template
 from util.json_utils import extract_json_from_text
@@ -73,6 +74,7 @@ def tools_condition(state: ExpertState) -> str:
 def build_expert_graph(
     llm: BaseChatModel,
     tools: List[BaseTool],
+    config: Optional[Config] = None,
 ) -> Any:
     """构建专家分析子图。
     
@@ -84,6 +86,7 @@ def build_expert_graph(
     Args:
         llm: LangChain 标准 ChatModel。
         tools: LangChain 工具列表。
+        config: 配置对象（可选），用于获取最大轮次限制。
     
     Returns:
         编译后的 LangGraph 子图。
@@ -105,18 +108,60 @@ def build_expert_graph(
         tool_descriptions.append(f"- **{tool.name}**: {desc}")
     available_tools_text = "\n".join(tool_descriptions)
     
-    # 定义 reasoner 节点（异步）
-    async def reasoner(state: ExpertState) -> ExpertState:
-        """推理节点：调用 LLM 进行分析。
+    async def handle_circuit_breaker(
+        messages: List[BaseMessage],
+        max_rounds: int
+    ) -> Optional[Dict[str, Any]]:
+        """处理轮次熔断逻辑。
         
-        第一轮动态构建包含完整上下文的 SystemMessage，后续轮次直接使用历史消息。
+        Args:
+            messages: 当前消息列表。
+            max_rounds: 最大轮次限制。
+        
+        Returns:
+            如果触发熔断，返回包含强制结束响应的状态；否则返回 None。
         """
-        messages = state.get("messages", [])
-        risk_context = state.get("risk_context")
-        diff_context = state.get("diff_context", "")
-        file_content = state.get("file_content", "")
-        risk_type_str = risk_context.risk_type.value
+        current_round = len(messages)
+        
+        if current_round >= max_rounds:
+            # 触发熔断：构造强制结束提示
+            logger.warning(f"Circuit breaker triggered: {current_round} rounds >= {max_rounds} max rounds")
+            force_stop_msg = SystemMessage(content="""⚠️ 警告：分析步骤已达上限。
+                请立即停止调用任何工具！
+                请根据目前已收集到的信息，直接输出最终的 JSON 结果。
+                即使信息不完整，也要基于现有证据给出判断。""")
+            
+            # 执行强制推理：构造消息列表
+            new_messages = [force_stop_msg] + messages + [force_stop_msg]
+            
+            # 调用 LLM
+            response = await llm_with_tools.ainvoke(new_messages)
+            
+            # 安全兜底：强制设置 response.tool_calls = []，防止模型无视 System Prompt 依然尝试调用工具
+            if hasattr(response, "tool_calls"):
+                response.tool_calls = []
+            
+            return {
+                "messages": [response]
+            }
+        
+        return None
     
+    def build_system_message(
+        risk_context: RiskItem,
+        risk_type_str: str,
+        file_content: str
+    ) -> SystemMessage:
+        """构建系统提示词消息。
+        
+        Args:
+            risk_context: 风险项上下文。
+            risk_type_str: 风险类型字符串。
+            file_content: 文件完整内容（可选）。
+        
+        Returns:
+            构建好的 SystemMessage。
+        """
         # 获取基础系统提示词
         try:
             base_system_prompt = render_prompt_template(
@@ -153,7 +198,29 @@ def build_expert_graph(
             {format_instructions}
             """
         
-        system_msg = SystemMessage(content=system_content)
+        return SystemMessage(content=system_content)
+    
+    # 定义 reasoner 节点（异步）
+    async def reasoner(state: ExpertState) -> ExpertState:
+        """推理节点：调用 LLM 进行分析。
+        
+        第一轮动态构建包含完整上下文的 SystemMessage，后续轮次直接使用历史消息。
+        包含轮次熔断机制，防止无限循环。
+        """
+        messages = state.get("messages", [])
+        risk_context = state.get("risk_context")
+        diff_context = state.get("diff_context", "")
+        file_content = state.get("file_content", "")
+        risk_type_str = risk_context.risk_type.value
+        
+        # 构建系统提示词
+        system_msg = build_system_message(risk_context, risk_type_str, file_content)
+
+        # 检查轮次：如果超过最大轮次，触发熔断
+        max_rounds = config.system.max_expert_rounds if config else 20
+        circuit_breaker_result = await handle_circuit_breaker( [system_msg, *messages], max_rounds)
+        if circuit_breaker_result is not None:
+            return circuit_breaker_result
         
         if not messages:
             # 构建初始 UserMessage

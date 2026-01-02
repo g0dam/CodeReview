@@ -187,6 +187,7 @@ async def run_expert_group(
                 expert_graph = build_expert_graph(
                     llm=llm,
                     tools=langchain_tools,
+                    config=config
                 )
                 
                 # 运行专家分析子图

@@ -13,7 +13,6 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -139,37 +138,6 @@ def filter_cases(
     return filtered
 
 
-def enhance_results_with_metadata(
-    results_file: Path,
-    repo_name: str,
-    pr_number: int,
-    case_name: str
-) -> None:
-    """在结果JSON文件中添加元数据。
-    
-    Args:
-        results_file: 结果文件路径
-        repo_name: 仓库名
-        pr_number: PR号
-        case_name: case名称
-    """
-    with open(results_file, "r", encoding="utf-8") as f:
-        results = json.load(f)
-    
-    # 添加元数据
-    if "metadata" not in results:
-        results["metadata"] = {}
-    
-    results["metadata"]["repo_name"] = repo_name
-    results["metadata"]["pr_number"] = pr_number
-    results["metadata"]["case_name"] = case_name
-    results["metadata"]["test_timestamp"] = datetime.now().isoformat()
-    
-    # 保存回文件
-    with open(results_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-
-
 async def run_single_test(
     case: Dict,
     datasets_dir: Path,
@@ -178,10 +146,13 @@ async def run_single_test(
 ) -> Tuple[bool, str]:
     """运行单个测试用例。
     
+    注意: output_dir 参数保留用于向后兼容，但不再使用。
+    结果文件由 main.py 自动保存到 log 目录。
+    
     Args:
         case: 测试用例字典
         datasets_dir: 数据集目录
-        output_dir: 输出目录
+        output_dir: 输出目录（已弃用，保留用于向后兼容）
         quiet: 是否静默模式
     
     Returns:
@@ -213,10 +184,11 @@ async def run_single_test(
     if not base_branch or not head_branch:
         return (False, f"base_branch或head_branch为null: base={base_branch}, head={head_branch}")
     
-    # 构建输出文件路径
-    output_file = output_dir / f"review_results_{repo_name}_pr{pr_number}.json"
-    
     # 运行审查
+    # 注意: output_file 参数会被 main.py 忽略，因为 main.py 会自动生成输出位置
+    # 但函数签名要求此参数，所以传入一个占位符路径
+    placeholder_output = Path("/dev/null")
+    
     try:
         if not quiet:
             print(f"\n{'='*80}")
@@ -229,22 +201,15 @@ async def run_single_test(
             repo_path=repo_path,
             base_branch=base_branch,
             head_branch=head_branch,
-            output_file=output_file,
+            output_file=placeholder_output,
             quiet=quiet
         )
         
         if exit_code != 0:
             return (False, f"审查失败，退出码: {exit_code}")
         
-        # 增强结果文件，添加元数据
-        enhance_results_with_metadata(
-            results_file=output_file,
-            repo_name=repo_name,
-            pr_number=pr_number,
-            case_name=case_name
-        )
-        
-        return (True, f"成功: {output_file}")
+        # 结果文件已由 main.py 自动保存到 log 目录
+        return (True, f"成功: 结果已保存到 log 目录")
         
     except Exception as e:
         return (False, f"执行异常: {str(e)}")
@@ -297,7 +262,7 @@ def parse_arguments() -> argparse.Namespace:
         "--output-dir",
         type=str,
         default=None,
-        help="输出目录（默认：test/results）"
+        help="输出目录（已弃用，结果文件现在自动保存到 log 目录）"
     )
     
     parser.add_argument(
@@ -319,11 +284,11 @@ async def main():
     # 解析参数
     datasets_dir = Path(args.datasets_dir).resolve()
     
-    # 输出目录：默认使用 test/results，如果指定了则使用指定的
+    # 输出目录：保留用于向后兼容，但不再使用（结果文件现在自动保存到 log 目录）
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        # 默认输出到 test/results 目录
+        # 默认输出到 test/results 目录（已弃用）
         test_dir = Path(__file__).parent
         output_dir = test_dir / "results"
     
@@ -352,8 +317,8 @@ async def main():
         return 1
     
     print(f"📁 数据集目录: {datasets_dir}")
-    print(f"📁 输出目录: {output_dir}")
     print(f"📄 测试文件: {test_file}")
+    print(f"💡 注意: 结果文件将自动保存到 log 目录")
     
     print("\n📖 加载测试用例...")
     try:
@@ -415,7 +380,7 @@ async def main():
         for case_name, message in results["failed"]:
             print(f"  - {case_name}: {message}")
     
-    print(f"\n💾 结果文件保存在: {output_dir}")
+    print(f"\n💾 结果文件保存在: log 目录（由 main.py 自动生成）")
     
     return 0 if len(results["failed"]) == 0 else 1
 
