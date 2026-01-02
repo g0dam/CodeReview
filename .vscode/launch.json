@@ -9,11 +9,11 @@
             "cwd": "${workspaceFolder}",
             "args": [
                 "--repo",
-                "/Users/wangyue/Code/CodeReviewData/ReviewDataset/grafana-greptile",
+                "/Users/wangyue/Code/CodeReviewData/ReviewDataset/sentry-greptile",
                 "--base",
-                "cache-optimization-baseline",
+                "performance-optimization-baseline",
                 "--head",
-                "authz-service-improve-caching-pr"
+                "performance-enhancement-complete"
             ],
             "console": "integratedTerminal",
             "justMyCode": false,

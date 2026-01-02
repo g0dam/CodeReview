@@ -12,7 +12,6 @@ from core.state import ReviewState, RiskItem, RiskType
 from core.llm import LLMProvider
 from core.langchain_llm import LangChainLLMAdapter
 from core.config import Config
-from agents.prompts import render_prompt_template
 from agents.expert_graph import build_expert_graph, create_langchain_tools, run_expert_analysis
 from util.file_utils import read_file_content
 from util.diff_utils import extract_file_diff
@@ -187,44 +186,19 @@ async def run_expert_group(
         """Process a single task with concurrency control using LangGraph subgraph."""
         async with semaphore:
             try:
-                # 生成系统提示词
-                line_number_str = format_line_number(task.line_number)
+                # 读取文件内容
                 file_content = read_file_content(task.file_path, config) if config else ""
                 
-                # 格式化可用工具描述
-                tool_descriptions = []
-                for tool in langchain_tools:
-                    desc = getattr(tool, 'description', f'Tool: {tool.name}')
-                    tool_descriptions.append(f"- **{tool.name}**: {desc}")
-                available_tools_text = "\n".join(tool_descriptions)
-                
-                try:
-                    system_prompt = render_prompt_template(
-                        f"expert_{risk_type_str}",
-                        risk_type=risk_type_str,
-                        available_tools=available_tools_text,
-                        validation_logic_examples=""
-                    )
-                except FileNotFoundError:
-                    # Fallback to generic expert prompt
-                    system_prompt = render_prompt_template(
-                        "expert_generic",
-                        risk_type=risk_type_str,
-                        available_tools=available_tools_text
-                    )
-                
-                # 构建专家子图（每个任务使用相同的图结构，但系统提示词在运行时动态注入）
+                # 构建专家子图（系统提示词在 reasoner 节点内部动态构建）
                 expert_graph = build_expert_graph(
                     llm=llm_adapter,
                     tools=langchain_tools,
-                    system_prompt=system_prompt
                 )
                 
                 # 运行专家分析子图
                 analysis_result = await run_expert_analysis(
                     graph=expert_graph,
                     risk_item=task,
-                    system_prompt=system_prompt,
                     diff_context=extract_file_diff(diff_context, task.file_path),
                     file_content=file_content
                 )
@@ -233,31 +207,20 @@ async def run_expert_group(
                     logger.warning(f"Failed to get result from expert analysis for {task.file_path}")
                     return None
                 
-                result_dict = analysis_result.get("result")
+                # 结果已经是 RiskItem 对象
+                validated_item: RiskItem = analysis_result.get("result")
                 messages = analysis_result.get("messages", [])
                 
-                if not result_dict:
-                    logger.warning(f"Failed to extract JSON result from expert analysis for {task.file_path}")
+                if not validated_item:
+                    logger.warning(f"Failed to get RiskItem result from expert analysis for {task.file_path}")
                     return None
-                
-                # 将结果转换为 RiskItem
-                validated_item = RiskItem(
-                    risk_type=RiskType(task.risk_type.value),  # TODO: 直接用task的类型，因为模型可能吧类型关键字改掉
-                    file_path=result_dict.get("file_path", task.file_path),
-                    line_number=result_dict.get("line_number", task.line_number),
-                    description=result_dict.get("description", task.description),
-                    confidence=float(result_dict.get("confidence", task.confidence)),
-                    severity=result_dict.get("severity", task.severity),
-                    suggestion=result_dict.get("suggestion", task.suggestion)
-                )
                 
                 # 记录专家分析日志（包含对话历史）
                 expert_analysis = {
-                    "risk_type": risk_type_str,
                     "file_path": task.file_path,
                     "line_number": task.line_number,
                     "risk_item": task.model_dump(),  # 原始风险项
-                    "result": result_dict,  # 分析结果
+                    "result": validated_item.model_dump(),  # 分析结果（RiskItem 对象）
                     "validated_item": validated_item.model_dump(),  # 验证后的风险项
                     "messages": messages  # 对话历史
                 }

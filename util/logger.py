@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import Config
-from util.git_utils import get_repo_name
+from util.git_utils import get_repo_name, get_git_info
 
 
 def _get_log_directory(workspace_root: Path, config: Config, metadata: dict) -> Path:
@@ -23,11 +23,22 @@ def _get_log_directory(workspace_root: Path, config: Config, metadata: dict) -> 
     # Sanitize model name
     model_name = model_name.replace("/", "_").replace("\\", "_")
     
+    # Get current branch name from Git
+    branch_name, _ = get_git_info(workspace_root)
+    if branch_name:
+        # Sanitize branch name for filesystem
+        branch_name = branch_name.replace("/", "_").replace("\\", "_").replace("..", "").replace(" ", "_")
+        # Limit length to avoid filesystem issues
+        if len(branch_name) > 50:
+            branch_name = branch_name[:50]
+    else:
+        branch_name = "unknown"
+    
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Create log directory structure
-    log_dir = Path("log") / repo_name / model_name / timestamp
+    # Create log directory structure: log/repo_name/model_name/branch_name_timestamp
+    log_dir = Path("log") / repo_name / model_name / f"{branch_name}_{timestamp}"
     log_dir.mkdir(parents=True, exist_ok=True)
     
     return log_dir
@@ -116,10 +127,10 @@ def save_observations_to_log(
                     f.write(f"Analysis Result:\n")
                     f.write(f"{json.dumps(result, indent=2, ensure_ascii=False)}\n\n")
                 
-                validated_item = analysis.get("validated_item")
-                if validated_item:
-                    f.write(f"Validated Risk Item:\n")
-                    f.write(f"{json.dumps(validated_item, indent=2, ensure_ascii=False)}\n\n")
+                risk_item = analysis.get("risk_item")
+                if risk_item:
+                    f.write(f"Risk Item:\n")
+                    f.write(f"{json.dumps(risk_item, indent=2, ensure_ascii=False)}\n\n")
                 
                 # 2. Print conversation history
                 messages = analysis.get("messages", [])

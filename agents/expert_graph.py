@@ -5,82 +5,15 @@
 import logging
 from typing import List, Optional, Any
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from core.state import RiskItem, ExpertState
 from core.langchain_llm import LangChainLLMAdapter
 from langchain_core.tools import BaseTool
+from agents.prompts import render_prompt_template
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_json_from_messages(messages: List[Any]) -> Optional[dict]:
-    """从消息列表中提取 JSON 结果。
-    
-    尝试多种方法从最后一条消息中提取 JSON 格式的结果。
-    
-    Args:
-        messages: 消息列表（通常来自 LangGraph 的 final_state）。
-    
-    Returns:
-        提取的 JSON 字典，如果失败则返回 None。
-    """
-    if not messages:
-        logger.warning("No messages to extract JSON from")
-        return None
-    
-    # 获取最后一条消息的内容
-    last_message = messages[-1]
-    content = last_message.content if hasattr(last_message, "content") else str(last_message)
-    
-    # 尝试从内容中提取 JSON
-    import json
-    import re
-    
-    # 清理内容：移除代码块标记
-    content_clean = content.strip()
-    if content_clean.startswith("```json"):
-        content_clean = content_clean[7:]
-    if content_clean.startswith("```"):
-        content_clean = content_clean[3:]
-    if content_clean.endswith("```"):
-        content_clean = content_clean[:-3]
-    content_clean = content_clean.strip()
-    
-    # 方法1：尝试直接解析整个内容
-    try:
-        result = json.loads(content_clean)
-        if isinstance(result, dict) and "risk_type" in result:
-            return result
-    except json.JSONDecodeError:
-        pass
-    
-    # 方法2：尝试提取 JSON 对象（更健壮的正则表达式）
-    # 匹配嵌套的 JSON 对象
-    json_pattern = r'\{(?:[^{}]|(?:\{[^{}]*\}))*\}'
-    matches = re.finditer(json_pattern, content_clean, re.DOTALL)
-    for match in matches:
-        try:
-            result = json.loads(match.group(0))
-            if isinstance(result, dict) and ("risk_type" in result or "file_path" in result):
-                return result
-        except json.JSONDecodeError:
-            continue
-    
-    # 方法3：尝试查找代码块中的 JSON
-    code_block_pattern = r'```(?:json)?\s*\n(.*?)\n```'
-    code_block_match = re.search(code_block_pattern, content, re.DOTALL)
-    if code_block_match:
-        try:
-            result = json.loads(code_block_match.group(1).strip())
-            if isinstance(result, dict):
-                return result
-        except json.JSONDecodeError:
-            pass
-    
-    # 如果都失败了，返回 None
-    logger.warning(f"Failed to extract JSON from response: {content[:200]}")
-    return None
 
 
 def create_langchain_tools(
@@ -139,7 +72,6 @@ def tools_condition(state: ExpertState) -> str:
 def build_expert_graph(
     llm: LangChainLLMAdapter,
     tools: List[BaseTool],
-    system_prompt: str
 ) -> Any:
     """构建专家分析子图。
     
@@ -151,7 +83,7 @@ def build_expert_graph(
     Args:
         llm: LangChain LLM 适配器。
         tools: LangChain 工具列表。
-        system_prompt: 系统提示词模板。
+        risk_type_str: 风险类型字符串（用于渲染提示词模板）。
     
     Returns:
         编译后的 LangGraph 子图。
@@ -162,46 +94,75 @@ def build_expert_graph(
     # 创建工具节点
     tool_node = ToolNode(tools)
     
+    # 创建 Pydantic 解析器
+    parser = PydanticOutputParser(pydantic_object=RiskItem)
+    format_instructions = parser.get_format_instructions()
+    
+    # 格式化可用工具描述
+    tool_descriptions = []
+    for tool in tools:
+        desc = getattr(tool, 'description', f'Tool: {tool.name}')
+        tool_descriptions.append(f"- **{tool.name}**: {desc}")
+    available_tools_text = "\n".join(tool_descriptions)
+    
     # 定义 reasoner 节点（异步）
     async def reasoner(state: ExpertState) -> ExpertState:
         """推理节点：调用 LLM 进行分析。
         
-        每次调用都重新包含 system_msg，确保 LLM 始终记住输出格式要求。
-        第一轮从 risk_context 构建 user_msg，后续轮次保留消息历史。
+        第一轮动态构建包含完整上下文的 SystemMessage，后续轮次直接使用历史消息。
         """
         messages = state.get("messages", [])
         risk_context = state.get("risk_context")
         diff_context = state.get("diff_context", "")
         file_content = state.get("file_content", "")
+        risk_type_str = risk_context.risk_type.value
+    
+        # 获取基础系统提示词
+        try:
+            base_system_prompt = render_prompt_template(
+                f"expert_{risk_type_str}",
+                risk_type=risk_type_str,
+                available_tools=available_tools_text,
+                validation_logic_examples=""
+            )
+        except FileNotFoundError:
+            # 回退到通用提示词
+            base_system_prompt = render_prompt_template(
+                "expert_generic",
+                risk_type=risk_type_str,
+                available_tools=available_tools_text
+            )
         
-        # 每次调用都重新包含 system_msg
-        system_msg = SystemMessage(content=system_prompt)
+        # 构建完整的 SystemMessage 内容
+        system_content = f"""{base_system_prompt}
+            ## 当前任务锚点
+            风险类型: {risk_context.risk_type.value}
+            文件路径: {risk_context.file_path}
+            行号范围: {risk_context.line_number[0]}:{risk_context.line_number[1]}
+            描述: {risk_context.description}"""
+
+        if file_content:
+            system_content += f"""
+            ## 文件完整内容
+            以下是该缺陷所在文件的完整内容。**严禁对当前文件{risk_context.file_path}调用 read_file 工具**，请直接使用以下内容：
+
+            {file_content}"""
+
+        system_content += f"""
+            ## 输出格式要求
+            {format_instructions}
+            """
+        
+        system_msg = SystemMessage(content=system_content)
         
         if not messages:
-            # 第一轮：构建初始 user_msg，包含具体案例信息
-            user_msg_content = f"""请分析以下风险项：
-
-                风险类型: {risk_context.risk_type.value}
-                文件路径: {risk_context.file_path}
-                行号范围: {risk_context.line_number[0]}:{risk_context.line_number[1]}
-                描述: {risk_context.description}"""
-
-            if diff_context:
-                user_msg_content += f"\n\n文件 Diff:\n{diff_context}\n"
-            
-            if file_content:
-                if len(file_content) > 2000:
-                    user_msg_content += f"\n文件内容（前2000字符）:\n{file_content[:2000]}...\n"
-                else:
-                    user_msg_content += f"\n文件内容:\n{file_content}\n"
-            
-            user_msg_content += "\n如果需要更多信息，请调用工具。分析完成后，请输出最终的 JSON 结果。"
+            # 构建初始 UserMessage
+            user_msg_content = "请分析上述风险项。如果需要更多信息，请调用工具。分析完成后，请输出最终的 JSON 结果。"
             user_msg = HumanMessage(content=user_msg_content)
             new_messages = [system_msg, user_msg]
         else:
-            # 后续轮次：保留消息历史，但始终在开头包含 system_msg
-            # 让模型自己决定是否需要继续调用工具（通过 tools_condition 判断）
-            new_messages = [system_msg] + messages
+            # 后续轮次：直接使用历史消息（SystemMessage 已在第一轮添加）
+            new_messages = [system_msg, *messages]
         
         # 调用 LLM（异步）
         response = await llm_with_tools.ainvoke(new_messages)
@@ -240,7 +201,6 @@ def build_expert_graph(
 async def run_expert_analysis(
     graph: Any,
     risk_item: RiskItem,
-    system_prompt: str,
     diff_context: Optional[str] = None,
     file_content: Optional[str] = None
 ) -> Optional[dict]:
@@ -249,16 +209,19 @@ async def run_expert_analysis(
     Args:
         graph: 编译后的专家子图。
         risk_item: 待分析的风险项。
-        system_prompt: 系统提示词（用于初始化）。
+        risk_type_str: 风险类型字符串（用于渲染提示词模板）。
         diff_context: 文件的 diff 上下文（可选）。
         file_content: 文件的完整内容（可选）。
     
     Returns:
         包含 'result' 和 'messages' 的字典，如果失败则返回 None。
-        - result: 最终验证结果（JSON 字典）
+        - result: 最终验证结果（RiskItem 对象）
         - messages: 对话历史（消息列表）
     """
     try:
+        # 创建 Pydantic 解析器
+        parser = PydanticOutputParser(pydantic_object=RiskItem)
+        
         # 初始化状态
         initial_state: ExpertState = {
             "messages": [],
@@ -271,11 +234,22 @@ async def run_expert_analysis(
         # 运行子图
         final_state = await graph.ainvoke(initial_state)
         
-        # 从消息中提取 JSON 结果
+        # 从消息中提取最后一条消息的文本内容
         messages = final_state.get("messages", [])
-        result = _extract_json_from_messages(messages)
+        if not messages:
+            logger.warning("No messages in final state")
+            return None
         
-        if result is None:
+        # 获取最后一条消息的文本内容
+        last_message = messages[-1]
+        response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
+        
+        # 使用 PydanticOutputParser 解析结果
+        try:
+            result: RiskItem = parser.parse(response_text)
+        except Exception as e:
+            logger.warning(f"PydanticOutputParser failed to parse response: {e}")
+            logger.warning(f"Response text (first 500 chars): {response_text[:500]}")
             return None
         
         return {

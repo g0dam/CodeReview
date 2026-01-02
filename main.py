@@ -333,6 +333,9 @@ async def run_review(
     if not changed_files:
         log("  ⚠️  Warning: No changed files detected, workflow may not produce results")
     
+
+    # TODO: 临时调试 屏蔽lint_errors
+    lint_errors = []
     try:
         results = await run_multi_agent_workflow(
             diff_context=pr_diff,
