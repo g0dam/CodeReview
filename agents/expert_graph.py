@@ -110,13 +110,19 @@ def build_expert_graph(
     
     async def handle_circuit_breaker(
         messages: List[BaseMessage],
-        max_rounds: int
+        max_rounds: int,
+        raw_llm: BaseChatModel,
+        format_instructions: str,
+        risk_context: RiskItem
     ) -> Optional[Dict[str, Any]]:
-        """处理轮次熔断逻辑。
+        """处理轮次熔断逻辑（物理熔断版本）。
         
         Args:
             messages: 当前消息列表。
             max_rounds: 最大轮次限制。
+            raw_llm: 未绑定工具的原始模型实例。
+            format_instructions: Pydantic Parser 的格式说明。
+            risk_context: 风险项上下文。
         
         Returns:
             如果触发熔断，返回包含强制结束响应的状态；否则返回 None。
@@ -126,18 +132,35 @@ def build_expert_graph(
         if current_round >= max_rounds:
             # 触发熔断：构造强制结束提示
             logger.warning(f"Circuit breaker triggered: {current_round} rounds >= {max_rounds} max rounds")
-            force_stop_msg = SystemMessage(content="""⚠️ 警告：分析步骤已达上限。
-                请立即停止调用任何工具！
-                请根据目前已收集到的信息，直接输出最终的 JSON 结果。
-                即使信息不完整，也要基于现有证据给出判断。""")
+            
+            # 构建完整的强制停止提示词
+            force_stop_content = f"""⚠️ **紧急停止：分析轮次已达上限 ({current_round} >= {max_rounds})**
+
+                **请立即停止调用任何工具！直接最终分析！**
+
+                请根据目前已收集到的信息，**直接输出最终的 JSON 结果**。
+                即使信息不完整，也要基于现有证据给出判断。
+
+                ## 当前任务锚点
+                风险类型: {risk_context.risk_type.value}
+                文件路径: {risk_context.file_path}
+                行号范围: {risk_context.line_number[0]}:{risk_context.line_number[1]}
+                描述: {risk_context.description}
+
+                ## 输出格式要求（必须严格遵守）
+                {format_instructions}
+
+                **重要：你必须输出一个有效的 JSON 对象，格式必须完全符合上述要求。不要输出任何解释性文字，只输出 JSON。**"""
+            
+            force_stop_msg = SystemMessage(content=force_stop_content)
             
             # 执行强制推理：构造消息列表
-            new_messages = [force_stop_msg] + messages + [force_stop_msg]
+            # TODO: 强制兜底回复，不传入历史对话，因为传入历史对话模型会继续问工具，因此直接兜底回复
+            new_messages = [force_stop_msg]
             
-            # 调用 LLM
-            response = await llm_with_tools.ainvoke(new_messages)
+            # 关键：使用原始 LLM（未绑定工具），物理上切断工具调用路径
+            response = await raw_llm.ainvoke(new_messages)
             
-            # 安全兜底：强制设置 response.tool_calls = []，防止模型无视 System Prompt 依然尝试调用工具
             if hasattr(response, "tool_calls"):
                 response.tool_calls = []
             
@@ -209,16 +232,21 @@ def build_expert_graph(
         """
         messages = state.get("messages", [])
         risk_context = state.get("risk_context")
-        diff_context = state.get("diff_context", "")
         file_content = state.get("file_content", "")
         risk_type_str = risk_context.risk_type.value
         
         # 构建系统提示词
         system_msg = build_system_message(risk_context, risk_type_str, file_content)
 
-        # 检查轮次：如果超过最大轮次，触发熔断
+        # 检查轮次：如果超过最大轮次，触发物理熔断
         max_rounds = config.system.max_expert_rounds if config else 20
-        circuit_breaker_result = await handle_circuit_breaker( [system_msg, *messages], max_rounds)
+        circuit_breaker_result = await handle_circuit_breaker(
+            [*messages], 
+            max_rounds,
+            llm,  # 传入原始 LLM（未绑定工具）
+            format_instructions,  # 传入格式说明
+            risk_context  # 传入风险上下文
+        )
         if circuit_breaker_result is not None:
             return circuit_breaker_result
         
